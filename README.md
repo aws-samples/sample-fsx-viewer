@@ -2,6 +2,8 @@
 
 A terminal-based monitoring tool for Amazon FSx file systems. Displays storage utilization, performance metrics, and cost information in real-time with smooth gradient progress bars.
 
+![Summary View](docs/images/summary.png)
+
 ## Features
 
 - Real-time monitoring of all FSx file system types (Lustre, Windows, ONTAP, OpenZFS)
@@ -114,6 +116,9 @@ Press `Enter` on a file system to view its details.
 ### Detail Views
 
 **ONTAP Detail View:**
+
+![ONTAP Detail View](docs/images/ontap-detail.png)
+
 - File system overview (capacity, throughput, IOPS, CPU)
 - Volume table with per-volume metrics from CloudWatch:
   - StorageUsed / StorageCapacity
@@ -128,6 +133,9 @@ Press `Enter` on a file system to view its details.
   - Read/Write throughput
 
 **Lustre Detail View:**
+
+![Lustre Detail View](docs/images/lustre-detail.png)
+
 - File system overview
 - MDS (Metadata Server) table with CPU utilization per server
 
