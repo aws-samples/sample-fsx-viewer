@@ -1,14 +1,21 @@
 [project]
 name = "fsx-viewer"
 version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.14"
+description = "Terminal-based monitoring tool for Amazon FSx file systems"
+requires-python = ">=3.9"
 dependencies = [
     "boto3>=1.42.25",
-    "hypothesis>=6.150.0",
-    "pytest>=9.0.2",
     "rich>=14.2.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis>=6.150.0",
+    "pytest>=9.0.2",
+]
+
+[project.scripts]
+fsx-viewer = "fsx_viewer.__main__:main"
 
 [tool.pytest.ini_options]
 testpaths = ["fsx_viewer"]

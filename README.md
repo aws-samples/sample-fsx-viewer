@@ -17,28 +17,29 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
 ## Installation
 
 ```bash
-# Clone the repository
-git clone <repo-url>
+# Install from GitLab with pip
+pip install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
+
+# Or with uv
+uv pip install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
+
+# For development (clone and install locally)
+git clone git@ssh.gitlab.aws.dev:owolabip/fsx-viewer.git
 cd fsx-viewer
-
-# Install with uv (recommended)
 uv sync
-
-# Or with pip
-pip install -r requirements.txt
 ```
 
 ## Usage
 
 ```bash
-# Run with uv
-uv run python -m fsx_viewer --region us-east-1
+# Run the viewer
+fsx-viewer --region us-east-1
 
 # View a specific file system in detail
-uv run python -m fsx_viewer --region us-east-1 --file-system-id fs-0123456789abcdef0
+fsx-viewer --region us-east-1 --file-system-id fs-0123456789abcdef0
 
-# Or directly with python (if dependencies installed)
-python -m fsx_viewer --region us-east-1
+# For development (if using uv sync)
+uv run fsx-viewer --region us-east-1
 ```
 
 ### Command-line Options
@@ -80,19 +81,19 @@ Detail view (ONTAP/OpenZFS volumes):
 
 ```bash
 # View all file systems in eu-west-1
-uv run python -m fsx_viewer --region eu-west-1
+fsx-viewer --region eu-west-1
 
 # Filter to only ONTAP file systems
-uv run python -m fsx_viewer --region us-east-1 --type ONTAP
+fsx-viewer --region us-east-1 --type ONTAP
 
 # View details for a specific file system
-uv run python -m fsx_viewer --region us-east-1 --file-system-id fs-0123456789abcdef0
+fsx-viewer --region us-east-1 --file-system-id fs-0123456789abcdef0
 
 # Sort by capacity descending
-uv run python -m fsx_viewer --region us-east-1 --sort capacity=dsc
+fsx-viewer --region us-east-1 --sort capacity=dsc
 
 # Use a specific AWS profile
-uv run python -m fsx_viewer --region us-east-1 --profile myprofile
+fsx-viewer --region us-east-1 --profile myprofile
 ```
 
 ## Views
