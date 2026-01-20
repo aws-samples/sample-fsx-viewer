@@ -1,0 +1,16 @@
+[project]
+name = "fsx-viewer"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.14"
+dependencies = [
+    "boto3>=1.42.25",
+    "hypothesis>=6.150.0",
+    "pytest>=9.0.2",
+    "rich>=14.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["fsx_viewer"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
