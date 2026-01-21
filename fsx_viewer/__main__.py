@@ -171,7 +171,7 @@ def _run_detail_mode_for_fs(
     disable_pricing: bool,
     sort: str = "name=asc",
     manage_screen: bool = True,
-    region: Optional[str] = None,
+    region: str = "us-east-1",
 ) -> int:
     """Run detail view for a specific file system (called from summary view)."""
     # Create detail store and controller

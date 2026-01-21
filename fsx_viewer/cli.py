@@ -160,7 +160,7 @@ def parse_args(args: Optional[list] = None) -> Config:
     # Region is required
     region = get_value(parsed.region, env_region, "region", None)
     if not region and not parsed.version:
-        parser.error("Region is required. Set via --region, AWS_REGION env var, or config file.")
+        parser.error("Invalid usage: Region is required.\nSet via --region, AWS_REGION env var, or config file (~/.fsx-viewer).")
     
     return Config(
         region=region or "",
