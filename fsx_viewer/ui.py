@@ -175,6 +175,7 @@ class UI:
         style: Optional[Style] = None,
         disable_pricing: bool = False,
         page_size: int = 10,
+        region: Optional[str] = None,
     ):
         self._store = store
         self._style = style or Style()
@@ -186,6 +187,7 @@ class UI:
         self._running = False
         self._sort_key, self._sort_reverse = make_sorter(sort)
         self._selected_fs_id: Optional[str] = None  # Set when user presses Enter
+        self._region = region
     
     def _get_sorted_file_systems(self, stats: Stats) -> List[FileSystem]:
         """Get file systems sorted according to sort spec."""
@@ -247,6 +249,8 @@ class UI:
         utilization = (stats.total_used_capacity / stats.total_capacity * 100) if stats.total_capacity > 0 else 0
         
         summary = Text()
+        if self._region:
+            summary.append(f"[{self._region}] ", style="dim")
         summary.append(f"{stats.total_file_systems} file systems", style="bold")
         summary.append(" | ")
         summary.append(f"{used_tib:.1f}/{total_tib:.1f} TiB", style="cyan")
@@ -295,7 +299,7 @@ class UI:
         utilization = fs.utilization()
         
         # Progress bar with capacity info (width=30 for smoother gradient)
-        progress = self.render_progress_bar(utilization, width=30)
+        progress = self.render_progress_bar(utilization, width=30, gradient=True)
         capacity_gib = fs.storage_capacity
         used_gib = fs.used_capacity
         
@@ -524,6 +528,8 @@ class DetailUI:
         disable_pricing: bool = False,
         page_size: int = 10,
         sort: str = "name=asc",
+        name_filter: Optional[str] = None,
+        region: Optional[str] = None,
     ):
         self._store = store
         self._style = style or Style()
@@ -533,6 +539,8 @@ class DetailUI:
         self._console = Console()
         self._running = False
         self._sort_key, self._sort_reverse = make_volume_sorter(sort)
+        self._name_filter = name_filter
+        self._region = region
     
     def _get_page_count(self, total_items: int) -> int:
         """Calculate total number of pages."""
@@ -554,9 +562,9 @@ class DetailUI:
         if fs is None:
             return
         
-        # Get total items based on file system type
+        # Get total items based on file system type (use filtered count for volumes)
         if fs.type in (FileSystemType.ONTAP, FileSystemType.OPENZFS):
-            total_items = len(self._store.get_volumes())
+            total_items = len(self._get_sorted_volumes())
         elif fs.type == FileSystemType.LUSTRE:
             total_items = len(self._store.get_mds_servers())
         else:
@@ -572,8 +580,14 @@ class DetailUI:
             self._current_page -= 1
     
     def _get_sorted_volumes(self) -> List[Volume]:
-        """Get volumes sorted according to sort spec."""
+        """Get volumes filtered and sorted according to specs."""
         volumes = self._store.get_volumes()
+        
+        # Apply name filter if specified
+        if self._name_filter:
+            filter_lower = self._name_filter.lower()
+            volumes = [v for v in volumes if filter_lower in v.name.lower()]
+        
         return sorted(volumes, key=self._sort_key, reverse=self._sort_reverse)
     
     def _render_progress_bar(self, utilization: float, width: int = 12, gradient: bool = False) -> Text:
@@ -605,6 +619,8 @@ class DetailUI:
     def _render_header(self, fs: FileSystem) -> Text:
         """Render the file system header with basic info."""
         header = Text()
+        if self._region:
+            header.append(f"[{self._region}] ", style="dim")
         header.append(f"{fs.id}", style="bold cyan")
         header.append(" | ")
         header.append(f"{fs.type.value}", style="bold")

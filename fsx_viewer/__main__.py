@@ -108,6 +108,7 @@ def _run_summary_mode(
                 sort=config.sort,
                 style=style,
                 disable_pricing=config.disable_pricing,
+                region=config.region,
             )
             
             # Set up signal handlers for graceful shutdown
@@ -146,6 +147,7 @@ def _run_summary_mode(
                     disable_pricing=config.disable_pricing,
                     sort=config.sort,
                     manage_screen=False,
+                    region=config.region,
                 )
                 # After detail view exits, loop back to summary view
                 if result != 0:
@@ -169,6 +171,7 @@ def _run_detail_mode_for_fs(
     disable_pricing: bool,
     sort: str = "name=asc",
     manage_screen: bool = True,
+    region: Optional[str] = None,
 ) -> int:
     """Run detail view for a specific file system (called from summary view)."""
     # Create detail store and controller
@@ -188,6 +191,8 @@ def _run_detail_mode_for_fs(
         style=style,
         disable_pricing=disable_pricing,
         sort=sort,
+        name_filter=controller_config.name_filter,
+        region=region,
     )
     
     # Set up signal handlers for graceful shutdown
@@ -243,6 +248,8 @@ def _run_detail_mode(
         style=style,
         disable_pricing=config.disable_pricing,
         sort=config.sort,
+        name_filter=config.name_filter,
+        region=config.region,
     )
     
     # Set up signal handlers for graceful shutdown

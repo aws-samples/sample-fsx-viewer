@@ -19,16 +19,22 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
 ## Installation
 
 ```bash
-# Install from GitLab with pip
-pip install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Or with uv
-uv pip install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
+# One-liner install
+uv tool install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
 
 # For development (clone and install locally)
 git clone git@ssh.gitlab.aws.dev:owolabip/fsx-viewer.git
 cd fsx-viewer
 uv sync
+```
+
+## Uninstall
+
+```bash
+uv tool uninstall fsx-viewer
 ```
 
 ## Usage
@@ -179,7 +185,7 @@ Configuration precedence: CLI args > environment variables > config file > defau
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - AWS credentials configured (via environment, profile, or IAM role)
 - IAM permissions:
   - `fsx:DescribeFileSystems`
