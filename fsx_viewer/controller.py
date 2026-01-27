@@ -16,7 +16,7 @@ class Config:
         self,
         file_system_type: Optional[str] = None,
         name_filter: Optional[str] = None,
-        refresh_interval: int = 30,
+        refresh_interval: int = 300,
         metric_interval: int = 60,
     ):
         self.file_system_type = file_system_type

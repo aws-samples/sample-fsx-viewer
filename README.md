@@ -59,7 +59,7 @@ uv run fsx-viewer --region us-east-1
 -f, --file-system-id ID       Show detail view for specific file system
 -n, --name-filter FILTER      Filter by name (substring match)
 -s, --sort SORT               Sort field and order (e.g., 'capacity=dsc')
---refresh-interval SECS       File system refresh interval (default: 30)
+--refresh-interval SECS       File system refresh interval (default: 300)
 --metric-interval SECS        Metrics refresh interval (default: 60)
 --disable-pricing             Hide cost information
 --style COLORS                Progress bar colors (good,ok,bad)
@@ -174,7 +174,7 @@ Create `~/.fsx-viewer` for default settings:
 ```
 region=us-east-1
 profile=default
-refresh-interval=30
+refresh-interval=300
 metric-interval=60
 sort=capacity=dsc
 disable-pricing=false
