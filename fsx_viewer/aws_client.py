@@ -370,7 +370,7 @@ class CloudWatchClient:
                     'Id': f'rb_{i}',
                     'MetricStat': {
                         'Metric': {'Namespace': namespace, 'MetricName': 'DataReadBytes', 'Dimensions': dimension},
-                        'Period': 60, 'Stat': 'Average',
+                        'Period': 60, 'Stat': 'Sum',
                     },
                     'Label': f'{fs_id}|read_bytes',
                 },
@@ -378,7 +378,7 @@ class CloudWatchClient:
                     'Id': f'wb_{i}',
                     'MetricStat': {
                         'Metric': {'Namespace': namespace, 'MetricName': 'DataWriteBytes', 'Dimensions': dimension},
-                        'Period': 60, 'Stat': 'Average',
+                        'Period': 60, 'Stat': 'Sum',
                     },
                     'Label': f'{fs_id}|write_bytes',
                 },
@@ -386,7 +386,7 @@ class CloudWatchClient:
                     'Id': f'ro_{i}',
                     'MetricStat': {
                         'Metric': {'Namespace': namespace, 'MetricName': 'DataReadOperations', 'Dimensions': dimension},
-                        'Period': 60, 'Stat': 'Average',
+                        'Period': 60, 'Stat': 'Sum',
                     },
                     'Label': f'{fs_id}|read_ops',
                 },
@@ -394,7 +394,7 @@ class CloudWatchClient:
                     'Id': f'wo_{i}',
                     'MetricStat': {
                         'Metric': {'Namespace': namespace, 'MetricName': 'DataWriteOperations', 'Dimensions': dimension},
-                        'Period': 60, 'Stat': 'Average',
+                        'Period': 60, 'Stat': 'Sum',
                     },
                     'Label': f'{fs_id}|write_ops',
                 },
@@ -964,7 +964,7 @@ class CloudWatchClient:
                         'Dimensions': [dimension],
                     },
                     'Period': 60,
-                    'Stat': 'Average',
+                    'Stat': 'Sum',
                 },
             },
             {
@@ -976,7 +976,7 @@ class CloudWatchClient:
                         'Dimensions': [dimension],
                     },
                     'Period': 60,
-                    'Stat': 'Average',
+                    'Stat': 'Sum',
                 },
             },
             {
@@ -988,7 +988,7 @@ class CloudWatchClient:
                         'Dimensions': [dimension],
                     },
                     'Period': 60,
-                    'Stat': 'Average',
+                    'Stat': 'Sum',
                 },
             },
             {
@@ -1000,7 +1000,7 @@ class CloudWatchClient:
                         'Dimensions': [dimension],
                     },
                     'Period': 60,
-                    'Stat': 'Average',
+                    'Stat': 'Sum',
                 },
             },
         ]
