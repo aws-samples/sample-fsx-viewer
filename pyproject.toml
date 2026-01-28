@@ -4,13 +4,8 @@ version = "0.1.0"
 description = "Terminal-based monitoring tool for Amazon FSx file systems"
 requires-python = ">=3.10"
 dependencies = [
-    "bedrock-agentcore>=1.2.0",
     "boto3>=1.42.25",
-    "mcp>=1.26.0",
     "rich>=14.2.0",
-    "strands-agents>=1.23.0",
-    "strands-agents-sops>=1.0.5",
-    "strands-agents-tools>=0.2.19",
 ]
 
 [project.optional-dependencies]
