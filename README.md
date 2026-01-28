@@ -22,19 +22,28 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
 # Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# One-liner install
+# Install fsx-viewer
 uv tool install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
-
-# For development (clone and install locally)
-git clone git@ssh.gitlab.aws.dev:owolabip/fsx-viewer.git
-cd fsx-viewer
-uv sync
 ```
 
 ## Uninstall
 
 ```bash
 uv tool uninstall fsx-viewer
+```
+
+## Development Setup
+
+```bash
+# Clone the repository
+git clone git@ssh.gitlab.aws.dev:owolabip/fsx-viewer.git
+cd fsx-viewer
+
+# Install dependencies (includes dev dependencies like pytest, hypothesis)
+uv sync
+
+# Run from source
+uv run fsx-viewer --region us-east-1
 ```
 
 ## Usage
@@ -45,9 +54,6 @@ fsx-viewer --region us-east-1
 
 # View a specific file system in detail
 fsx-viewer --region us-east-1 --file-system-id fs-0123456789abcdef0
-
-# For development (if using uv sync)
-uv run fsx-viewer --region us-east-1
 ```
 
 ### Command-line Options
