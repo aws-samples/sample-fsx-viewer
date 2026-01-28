@@ -247,10 +247,10 @@ class CloudWatchClient:
                 metric_id = result.get('Id', '')
                 
                 if metric_id == 'read_bytes':
-                    # CloudWatch returns bytes per period, convert to MB/s
-                    metrics.read_throughput = value / (1024 * 1024) / 60  # bytes -> MB/s
+                    # CloudWatch returns bytes per period, convert to MiB/s
+                    metrics.read_throughput = value / (1024 * 1024) / 60  # bytes -> MiB/s
                 elif metric_id == 'write_bytes':
-                    metrics.write_throughput = value / (1024 * 1024) / 60  # bytes -> MB/s
+                    metrics.write_throughput = value / (1024 * 1024) / 60  # bytes -> MiB/s
                 elif metric_id == 'read_ops':
                     metrics.read_iops = value / 60  # ops per period -> ops per second
                 elif metric_id == 'write_ops':
@@ -640,7 +640,7 @@ class CloudWatchClient:
                 metric_id = metric_result.get('Id', '')
                 
                 if metric_id == 'read_bytes':
-                    # Convert bytes per period to MB/s
+                    # Convert bytes per period to MiB/s
                     result['read_throughput'] = value / (1024 * 1024) / 60
                 elif metric_id == 'write_bytes':
                     result['write_throughput'] = value / (1024 * 1024) / 60

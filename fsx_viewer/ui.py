@@ -371,7 +371,7 @@ class UI:
         table.add_column("Type", width=8)
         table.add_column("Capacity (GiB)", width=48)  # 30 bar + text
         table.add_column("CPU (%)", width=32)  # 25 bar + text
-        table.add_column("MB/s", width=10, justify="right")
+        table.add_column("MiB/s", width=10, justify="right")
         table.add_column("IOPS", width=7, justify="right")
         if not self._disable_pricing:
             table.add_column("$/mo", width=11, justify="right")
@@ -398,20 +398,25 @@ class UI:
         return table
     
     def render_help(self) -> Text:
-        """Render help text."""
+        """Render help text with styled key bindings."""
         stats = self._store.stats()
         total_pages = self._get_page_count(stats.total_file_systems)
         
         help_text = Text()
         help_text.append(f"Page {self._current_page + 1}/{total_pages}", style="dim")
         help_text.append(" • ", style="dim")
-        help_text.append("j/k: select", style="dim")
+        help_text.append("j/k", style="bold white")
+        help_text.append(": select", style="dim")
         help_text.append(" • ", style="dim")
-        help_text.append("Enter: details", style="dim")
+        help_text.append("Enter", style="bold white")
+        help_text.append(": details", style="dim")
         help_text.append(" • ", style="dim")
-        help_text.append("h/l: page", style="dim")
+        help_text.append("h/l", style="bold white")
+        help_text.append(": page", style="dim")
         help_text.append(" • ", style="dim")
-        help_text.append("q: quit", style="dim")
+        help_text.append("q", style="bold white")
+        help_text.append(": quit", style="dim")
+        help_text.append(" (arrow keys also supported)", style="dim italic")
         return help_text
     
     def render_full(self) -> Panel:
@@ -483,7 +488,22 @@ class UI:
                         # Check for keyboard input (non-blocking)
                         if select.select([sys.stdin], [], [], 0.5)[0]:
                             key = sys.stdin.read(1)
-                            if key == 'q' or key == '\x03':  # q or Ctrl+C
+                            
+                            # Handle escape sequences (arrow keys)
+                            if key == '\x1b':  # Escape character
+                                seq = sys.stdin.read(2)
+                                if seq == '[A':  # Up arrow
+                                    self.select_prev()
+                                elif seq == '[B':  # Down arrow
+                                    self.select_next()
+                                elif seq == '[D':  # Left arrow
+                                    self.prev_page()
+                                    self._selected_index = 0
+                                elif seq == '[C':  # Right arrow
+                                    self.next_page()
+                                    self._selected_index = 0
+                            # Handle single character keys
+                            elif key == 'q' or key == '\x03':  # q or Ctrl+C
                                 self._running = False
                                 break
                             elif key == 'j':  # j for select next (vim down)
@@ -640,7 +660,7 @@ class DetailUI:
         # Throughput
         throughput = fs.total_throughput()
         metrics.append("Throughput: ", style="dim")
-        metrics.append(f"{throughput:.1f} MB/s" if throughput > 0 else "-")
+        metrics.append(f"{throughput:.1f} MiB/s" if throughput > 0 else "-")
         metrics.append(" | ")
         
         # IOPS
@@ -657,15 +677,18 @@ class DetailUI:
         return metrics
     
     def _render_page_info(self, total_items: int) -> Text:
-        """Render pagination info and help text."""
+        """Render pagination info and help text with styled key bindings."""
         total_pages = self._get_page_count(total_items)
         
         help_text = Text()
         help_text.append(f"Page {self._current_page + 1}/{total_pages}", style="dim")
         help_text.append(" • ", style="dim")
-        help_text.append("h/l: page", style="dim")
+        help_text.append("h/l", style="bold white")
+        help_text.append(": page", style="dim")
         help_text.append(" • ", style="dim")
-        help_text.append("q: quit", style="dim")
+        help_text.append("q", style="bold white")
+        help_text.append(": quit", style="dim")
+        help_text.append(" (arrow keys also supported)", style="dim italic")
         return help_text
     
     def render(self) -> Panel:
@@ -707,7 +730,7 @@ class DetailUI:
         table.add_column("Name", min_width=10)
         table.add_column("Capacity (GiB)", width=48)  # 30 bar + text
         table.add_column("IOPS (r/w)", width=12, justify="right")
-        table.add_column("MB/s (r/w)", width=14, justify="right")
+        table.add_column("MiB/s (r/w)", width=14, justify="right")
         
         if not volumes:
             return table
@@ -911,7 +934,7 @@ class DetailUI:
         
         # Throughput
         throughput = fs.total_throughput()
-        throughput_text = Text(f"{throughput:.1f} MB/s" if throughput > 0 else "-")
+        throughput_text = Text(f"{throughput:.1f} MiB/s" if throughput > 0 else "-")
         metrics_table.add_row("Throughput", throughput_text)
         
         # IOPS
@@ -969,7 +992,16 @@ class DetailUI:
                         # Check for keyboard input (non-blocking)
                         if select.select([sys.stdin], [], [], 0.5)[0]:
                             key = sys.stdin.read(1)
-                            if key == 'q' or key == '\x03':  # q or Ctrl+C
+                            
+                            # Handle escape sequences (arrow keys)
+                            if key == '\x1b':  # Escape character
+                                seq = sys.stdin.read(2)
+                                if seq == '[D':  # Left arrow
+                                    self.prev_page()
+                                elif seq == '[C':  # Right arrow
+                                    self.next_page()
+                            # Handle single character keys
+                            elif key == 'q' or key == '\x03':  # q or Ctrl+C
                                 self._running = False
                                 break
                             elif key == 'l':  # l for next page

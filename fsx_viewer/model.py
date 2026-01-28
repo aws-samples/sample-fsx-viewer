@@ -19,8 +19,8 @@ class FileSystemType(str, Enum):
 class Metrics:
     """CloudWatch metrics for a file system."""
     used_capacity: int = 0  # GiB
-    read_throughput: float = 0.0  # MB/s
-    write_throughput: float = 0.0  # MB/s
+    read_throughput: float = 0.0  # MiB/s
+    write_throughput: float = 0.0  # MiB/s
     read_iops: float = 0.0
     write_iops: float = 0.0
     cpu_utilization: float = 0.0  # percentage (0-100)
@@ -68,7 +68,7 @@ class FileSystem:
         return self.read_iops + self.write_iops
     
     def total_throughput(self) -> float:
-        """Return combined read + write throughput in MB/s."""
+        """Return combined read + write throughput in MiB/s."""
         return self.read_throughput + self.write_throughput
     
     def monthly_price(self) -> float:
@@ -123,8 +123,8 @@ class Volume:
     used_capacity: int = 0     # GiB
     read_iops: float = 0.0
     write_iops: float = 0.0
-    read_throughput: float = 0.0   # MB/s
-    write_throughput: float = 0.0  # MB/s
+    read_throughput: float = 0.0   # MiB/s
+    write_throughput: float = 0.0  # MiB/s
     
     def utilization(self) -> float:
         """Return storage utilization as 0.0-1.0."""
@@ -137,7 +137,7 @@ class Volume:
         return self.read_iops + self.write_iops
     
     def total_throughput(self) -> float:
-        """Return combined read + write throughput in MB/s."""
+        """Return combined read + write throughput in MiB/s."""
         return self.read_throughput + self.write_throughput
 
 

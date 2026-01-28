@@ -113,7 +113,7 @@ Displays all file systems with:
 - Type (LUSTRE, WINDOWS, ONTAP, OPENZFS)
 - Storage capacity with utilization bar
 - CPU utilization (where available)
-- Throughput (MB/s)
+- Throughput (MiB/s)
 - IOPS
 - Estimated monthly cost
 
@@ -129,14 +129,14 @@ Press `Enter` on a file system to view its details.
 - Volume table with per-volume metrics from CloudWatch:
   - StorageUsed / StorageCapacity
   - Read/Write IOPS
-  - Read/Write throughput
+  - Read/Write throughput (MiB/s)
 
 **OpenZFS Detail View:**
 - File system overview
 - Volume table with:
   - Used capacity / Quota (or file system capacity if no quota)
   - Read/Write IOPS
-  - Read/Write throughput
+  - Read/Write throughput (MiB/s)
 
 **Lustre Detail View:**
 
@@ -148,23 +148,23 @@ Press `Enter` on a file system to view its details.
 **Windows Detail View:**
 - File system metrics table (capacity, CPU, throughput, IOPS)
 
-## Keyboard Controls (Vim-style)
+## Keyboard Controls
 
 ### Summary View
 | Key | Action |
 |-----|--------|
-| `j` | Move selection down |
-| `k` | Move selection up |
+| `j` or `↓` | Move selection down |
+| `k` or `↑` | Move selection up |
 | `Enter` | View details for selected file system |
-| `h` | Previous page |
-| `l` | Next page |
+| `h` or `←` | Previous page |
+| `l` or `→` | Next page |
 | `q` | Quit |
 
 ### Detail View
 | Key | Action |
 |-----|--------|
-| `h` | Previous page (volumes/MDS servers) |
-| `l` | Next page |
+| `h` or `←` | Previous page (volumes/MDS servers) |
+| `l` or `→` | Next page |
 | `q` | Return to summary view |
 
 ## Configuration File
