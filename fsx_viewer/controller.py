@@ -1,5 +1,6 @@
 """Controller for orchestrating data fetching and model updates."""
 
+import logging
 import threading
 import time
 from typing import Optional, Callable, List
@@ -7,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .model import Store, FileSystem, FileSystemType, DetailStore, Volume, MetadataServer
 from .aws_client import FSxClient, CloudWatchClient, StaticPricingProvider
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
@@ -133,8 +136,7 @@ class Controller:
             
             self._notify_update()
         except Exception as e:
-            # Log error but continue - don't crash the app
-            pass
+            logger.error(f"Failed to refresh file systems: {e}")
     
     def refresh_metrics(self) -> None:
         """Fetch CloudWatch metrics for all file systems in a single batched API call."""
@@ -173,8 +175,8 @@ class Controller:
             if lustre_fs_ids:
                 self._fetch_lustre_cpu_batch(lustre_fs_ids)
                 
-        except Exception:
-            pass  # Continue on error
+        except Exception as e:
+            logger.warning(f"Failed to refresh metrics: {e}")
     
     def _fetch_lustre_cpu_batch(self, lustre_fs_ids: List[str]) -> None:
         """Fetch CPU metrics for Lustre file systems in parallel."""
@@ -187,13 +189,16 @@ class Controller:
                 if metrics.cpu_utilization > 0:
                     fs.cpu_utilization = metrics.cpu_utilization
                     self._notify_update()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to fetch Lustre CPU for {fs_id}: {e}")
         
         # Fetch all Lustre CPU metrics concurrently
         futures = [self._executor.submit(fetch_cpu, fs_id) for fs_id in lustre_fs_ids]
         for future in as_completed(futures):
-            pass
+            try:
+                future.result()
+            except Exception as e:
+                logger.warning(f"Lustre CPU fetch task failed: {e}")
     
     def refresh_prices(self) -> None:
         """Update pricing for all file systems."""
@@ -316,7 +321,10 @@ class DetailController:
         
         # Wait for all to complete
         for future in as_completed(futures):
-            pass
+            try:
+                future.result()
+            except Exception as e:
+                logger.warning(f"Initial fetch task failed: {e}")
         
         self._notify_update()
     
@@ -345,8 +353,8 @@ class DetailController:
         """
         try:
             return self._fsx_client.get_file_system(self._file_system_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to fetch file system {self._file_system_id}: {e}")
         return None
     
     def _poll_file_system(self) -> None:
@@ -390,7 +398,10 @@ class DetailController:
                 futures.append(self._executor.submit(self.refresh_mds_metrics))
             
             for future in as_completed(futures):
-                pass
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.warning(f"Metrics polling task failed: {e}")
             
             self._notify_update()
     
@@ -408,8 +419,8 @@ class DetailController:
                 metrics.used_capacity = max(0, fs.storage_capacity - free_gib)
             fs.update_metrics(metrics)
             self._notify_update()
-        except Exception:
-            pass  # Continue on error
+        except Exception as e:
+            logger.warning(f"Failed to refresh file system metrics: {e}")
     
     def refresh_volumes(self) -> None:
         """Fetch volumes for ONTAP/OpenZFS file systems."""
@@ -424,8 +435,8 @@ class DetailController:
             volumes = self._fsx_client.describe_volumes(self._file_system_id)
             for vol in volumes:
                 self._store.add_volume(vol)
-        except Exception:
-            pass  # Continue on error
+        except Exception as e:
+            logger.warning(f"Failed to refresh volumes: {e}")
     
     def refresh_volume_metrics(self) -> None:
         """Fetch CloudWatch metrics for all volumes in a single batched API call."""
@@ -495,5 +506,5 @@ class DetailController:
                 self._store.add_mds(mds)
             
             self._notify_update()
-        except Exception:
-            pass  # Continue on error
+        except Exception as e:
+            logger.warning(f"Failed to refresh MDS metrics: {e}")

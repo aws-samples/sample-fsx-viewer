@@ -16,11 +16,33 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
 - Keyboard navigation with vim-style controls
 - Pagination for large datasets
 
+## Prerequisites
+
+- Python 3.10+
+- AWS credentials configured (via environment, profile, or IAM role)
+- IAM permissions:
+  - `fsx:DescribeFileSystems`
+  - `fsx:DescribeVolumes`
+  - `cloudwatch:GetMetricData`
+  - `cloudwatch:ListMetrics`
+
 ## Installation
+
+### macOS / Linux
 
 ```bash
 # Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install fsx-viewer
+uv tool install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
+```
+
+### Windows
+
+```powershell
+# Install uv (if not already installed)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # Install fsx-viewer
 uv tool install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
@@ -77,6 +99,7 @@ Note: `--type` and `--file-system-id` are mutually exclusive. Use `--type` to fi
 ### Sort Options
 
 Summary view:
+
 - `name=asc` / `name=dsc` - Sort by name
 - `type=asc` / `type=dsc` - Sort by file system type
 - `capacity=asc` / `capacity=dsc` - Sort by storage capacity
@@ -85,6 +108,7 @@ Summary view:
 - `creation=asc` / `creation=dsc` - Sort by creation time (default: dsc)
 
 Detail view (ONTAP/OpenZFS volumes):
+
 - `name=asc` / `name=dsc` - Sort by volume name
 - `capacity=asc` / `capacity=dsc` - Sort by volume capacity
 - `utilization=asc` / `utilization=dsc` - Sort by volume utilization
@@ -115,6 +139,7 @@ fsx-viewer --region us-east-1 --profile myprofile
 ### Summary View
 
 Displays all file systems with:
+
 - File system ID and name
 - Type (LUSTRE, WINDOWS, ONTAP, OPENZFS)
 - Storage capacity with utilization bar
@@ -138,6 +163,7 @@ Press `Enter` on a file system to view its details.
   - Read/Write throughput (MiB/s)
 
 **OpenZFS Detail View:**
+
 - File system overview
 - Volume table with:
   - Used capacity / Quota (or file system capacity if no quota)
@@ -152,11 +178,13 @@ Press `Enter` on a file system to view its details.
 - MDS (Metadata Server) table with CPU utilization per server
 
 **Windows Detail View:**
+
 - File system metrics table (capacity, CPU, throughput, IOPS)
 
 ## Keyboard Controls
 
 ### Summary View
+
 | Key | Action |
 |-----|--------|
 | `j` or `↓` | Move selection down |
@@ -167,6 +195,7 @@ Press `Enter` on a file system to view its details.
 | `q` | Quit |
 
 ### Detail View
+
 | Key | Action |
 |-----|--------|
 | `h` or `←` | Previous page (volumes/MDS servers) |
@@ -189,19 +218,10 @@ style=green,yellow,red
 
 Configuration precedence: CLI args > environment variables > config file > defaults
 
-## Requirements
-
-- Python 3.10+
-- AWS credentials configured (via environment, profile, or IAM role)
-- IAM permissions:
-  - `fsx:DescribeFileSystems`
-  - `fsx:DescribeVolumes`
-  - `cloudwatch:GetMetricData`
-  - `cloudwatch:ListMetrics`
-
 ## Performance
 
 The tool is optimized for minimal API calls:
+
 - Batched CloudWatch queries (single API call for all file systems/volumes)
 - Shared boto3 session across clients
 - Cached MDS server discovery for Lustre

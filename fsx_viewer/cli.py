@@ -1,10 +1,13 @@
 """Command-line argument parsing for FSx Viewer."""
 
 import argparse
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,7 +36,7 @@ def load_config_file() -> dict:
         return config
 
     try:
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -43,8 +46,8 @@ def load_config_file() -> dict:
                     key = key.strip().replace("-", "_")
                     value = value.strip()
                     config[key] = value
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to parse config file {config_path}: {e}")
 
     return config
 

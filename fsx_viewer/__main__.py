@@ -1,5 +1,7 @@
 """Entry point for fsx-viewer."""
 
+import logging
+import os
 import sys
 import signal
 
@@ -13,8 +15,24 @@ from .controller import Controller, DetailController, FileSystemNotFoundError, C
 from .ui import UI, DetailUI, Style
 
 
+def setup_logging():
+    """Configure logging based on environment variable."""
+    log_level = logging.WARNING  # Default to WARNING
+    if os.getenv('FSX_VIEWER_DEBUG'):
+        log_level = logging.DEBUG
+    
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+
 def main():
     """Main entry point."""
+    # Setup logging first
+    setup_logging()
+    
     # Parse command-line arguments
     try:
         config = parse_args()

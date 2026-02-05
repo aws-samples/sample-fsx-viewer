@@ -157,9 +157,7 @@ def make_sorter(sort_spec: str) -> Callable[[FileSystem], any]:
             return fs.utilization()
         elif field == "cost":
             return fs.hourly_price
-        elif field == "creation":
-            return fs.creation_time
-        else:
+        else:  # Default to creation time
             return fs.creation_time
     
     return lambda fs: get_key(fs), reverse

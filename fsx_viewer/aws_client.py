@@ -1,10 +1,13 @@
 """AWS client wrappers for FSx, CloudWatch, and Pricing."""
 
 import boto3
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Tuple
 
 from .model import FileSystem, FileSystemType, Metrics, Volume, MetadataServer
+
+logger = logging.getLogger(__name__)
 
 
 def create_session(region: str, profile: Optional[str] = None) -> boto3.Session:
@@ -52,8 +55,8 @@ class FSxClient:
             file_systems = response.get('FileSystems', [])
             if file_systems:
                 return self._parse_file_system(file_systems[0])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to describe file system {file_system_id}: {e}")
         return None
     
     def _parse_file_system(self, fs: dict) -> FileSystem:
@@ -175,8 +178,8 @@ class FSxClient:
                         write_throughput=0.0,
                     )
                     volumes.append(volume)
-        except Exception:
-            pass  # Return empty list on error
+        except Exception as e:
+            logger.warning(f"Failed to describe volumes for file system {file_system_id}: {e}")
         
         return volumes
     
@@ -271,8 +274,8 @@ class CloudWatchClient:
                 if cpu is not None:
                     metrics.cpu_utilization = cpu
                     
-        except Exception:
-            pass  # Return empty metrics on error
+        except Exception as e:
+            logger.warning(f"Failed to get metrics for file system {fs_id}: {e}")
         
         return metrics
     
@@ -324,8 +327,8 @@ class CloudWatchClient:
             
             if cpu_values:
                 return sum(cpu_values) / len(cpu_values)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to get Lustre CPU for file system {fs_id}: {e}")
         return None
     
     def get_file_system_metrics_batch(
@@ -511,8 +514,8 @@ class CloudWatchClient:
                 elif metric_type == 'cpu':
                     metrics.cpu_utilization = value
                     
-        except Exception:
-            pass  # Return empty metrics on error
+        except Exception as e:
+            logger.warning(f"Failed to get batch metrics for file systems: {e}")
         
         # For Lustre file systems, we need to fetch CPU separately (requires FileServer dimension)
         # This is done in parallel by the controller
@@ -653,8 +656,8 @@ class CloudWatchClient:
                     # Convert bytes to GiB (round to nearest integer)
                     result['used_capacity'] = round(value / (1024 * 1024 * 1024))
                     
-        except Exception:
-            pass  # Return zeros on error
+        except Exception as e:
+            logger.warning(f"Failed to get metrics for volume {volume_id}: {e}")
         
         return result
     
@@ -801,8 +804,8 @@ class CloudWatchClient:
                     capacity_gib = round(value / (1024 * 1024 * 1024))
                     results[vol_id]['storage_capacity'] = capacity_gib
                     
-        except Exception:
-            pass  # Return zeros on error
+        except Exception as e:
+            logger.warning(f"Failed to get batch metrics for volumes: {e}")
         
         return results
     
@@ -837,8 +840,8 @@ class CloudWatchClient:
             # Sort for consistent ordering
             mds_servers.sort()
             
-        except Exception:
-            pass  # Return empty list on error
+        except Exception as e:
+            logger.warning(f"Failed to get Lustre MDS list for file system {fs_id}: {e}")
         
         return mds_servers
     
@@ -883,8 +886,8 @@ class CloudWatchClient:
                 if values:
                     return values[0]
                     
-        except Exception:
-            pass  # Return 0.0 on error
+        except Exception as e:
+            logger.warning(f"Failed to get CPU for Lustre MDS {mds_id}: {e}")
         
         return 0.0
     
@@ -944,8 +947,8 @@ class CloudWatchClient:
                 if label and values:
                     result[label] = values[0]
                     
-        except Exception:
-            pass  # Return zeros on error
+        except Exception as e:
+            logger.warning(f"Failed to get batch CPU for Lustre MDS servers: {e}")
         
         return result
     
