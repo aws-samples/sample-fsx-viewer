@@ -17,6 +17,16 @@ dev = [
 [project.scripts]
 fsx-viewer = "fsx_viewer.__main__:main"
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fsx_viewer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"fsx_viewer/pricing_data.json" = "fsx_viewer/pricing_data.json"
+
 [tool.pytest.ini_options]
 testpaths = ["fsx_viewer"]
 python_files = ["test_*.py"]
