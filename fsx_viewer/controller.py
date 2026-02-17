@@ -168,6 +168,8 @@ class Controller:
                 if fs is not None:
                     fs.update_metrics(metrics)
             
+            # Recalculate pricing (capacity pool usage may have changed)
+            self.refresh_prices()
             self._notify_update()
             
             # For Lustre file systems, fetch CPU separately (requires FileServer dimension)
@@ -419,6 +421,12 @@ class DetailController:
                 free_gib = -metrics.used_capacity
                 metrics.used_capacity = max(0, fs.storage_capacity - free_gib)
             fs.update_metrics(metrics)
+            
+            # Recalculate pricing (capacity pool usage may have changed)
+            price = self._pricing.file_system_price(fs)
+            if price is not None:
+                fs.set_price(price)
+            
             self._notify_update()
         except Exception as e:
             logger.warning(f"Failed to refresh file system metrics: {e}")
