@@ -9,7 +9,8 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
 - Real-time monitoring of all FSx file system types (Lustre, Windows, ONTAP, OpenZFS)
 - Storage utilization with smooth gradient progress bars (green → yellow → orange → red)
 - CloudWatch metrics (throughput, IOPS, CPU utilization)
-- Estimated monthly costs based on AWS pricing
+- Estimated monthly costs with itemized breakdowns (storage, throughput, IOPS, capacity pool)
+- Pricing coverage across 36 AWS regions for all FSx types
 - Detail views with volume-level metrics (ONTAP/OpenZFS) and MDS CPU breakdown (Lustre)
 - Filtering by type and name
 - Sorting by various fields (name, capacity, utilization, cost, creation time)
@@ -35,7 +36,7 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install fsx-viewer
-uv tool install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
+uv tool install git+https://github.com/aws-samples/sample-fsx-viewer.git
 ```
 
 ### Windows
@@ -45,7 +46,7 @@ uv tool install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # Install fsx-viewer
-uv tool install git+ssh://git@ssh.gitlab.aws.dev/owolabip/fsx-viewer.git
+uv tool install git+https://github.com/aws-samples/sample-fsx-viewer.git
 ```
 
 ## Uninstall
@@ -58,8 +59,8 @@ uv tool uninstall fsx-viewer
 
 ```bash
 # Clone the repository
-git clone git@ssh.gitlab.aws.dev:owolabip/fsx-viewer.git
-cd fsx-viewer
+git clone https://github.com/aws-samples/sample-fsx-viewer.git
+cd sample-fsx-viewer
 
 # Install dependencies (includes dev dependencies like pytest, hypothesis)
 uv sync
@@ -157,6 +158,7 @@ Press `Enter` on a file system to view its details.
 ![ONTAP Detail View](docs/images/ontap-detail.png)
 
 - File system overview (capacity, throughput, IOPS, CPU)
+- Itemized monthly cost breakdown (SSD storage, capacity pool, throughput, IOPS)
 - Volume table with per-volume metrics from CloudWatch:
   - StorageUsed / StorageCapacity
   - Read/Write IOPS
