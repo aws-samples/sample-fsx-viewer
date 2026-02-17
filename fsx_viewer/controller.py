@@ -372,6 +372,7 @@ class DetailController:
                     fs.write_iops = existing.write_iops
                     fs.cpu_utilization = existing.cpu_utilization
                     fs.hourly_price = existing.hourly_price
+                    fs.pricing_breakdown = existing.pricing_breakdown
                 
                 self._store.set_file_system(fs)
                 

@@ -1,0 +1,95 @@
+{
+    "last_updated": "2026-02-17",
+    "version": "1.0",
+    "regions": {
+        "us-east-1": {
+            "ONTAP": {
+                "storage": {
+                    "SINGLE_AZ_1": 0.125,
+                    "SINGLE_AZ_2": 0.125,
+                    "MULTI_AZ_1": 0.250,
+                    "MULTI_AZ_2": 0.250
+                },
+                "capacity_pool": {
+                    "SINGLE_AZ_1": 0.0219,
+                    "SINGLE_AZ_2": 0.0219,
+                    "MULTI_AZ_1": 0.0438,
+                    "MULTI_AZ_2": 0.0438
+                },
+                "throughput": {
+                    "SINGLE_AZ_1": 0.72,
+                    "SINGLE_AZ_2": 1.60,
+                    "MULTI_AZ_1": 1.20,
+                    "MULTI_AZ_2": 2.50
+                },
+                "iops": {
+                    "SINGLE_AZ_1": 0.017,
+                    "SINGLE_AZ_2": 0.017,
+                    "MULTI_AZ_1": 0.034,
+                    "MULTI_AZ_2": 0.034
+                },
+                "iops_baseline_per_gb": 3
+            },
+            "WINDOWS": {
+                "storage": {
+                    "SINGLE_AZ_1": {"SSD": 0.130, "HDD": 0.013},
+                    "SINGLE_AZ_2": {"SSD": 0.130, "HDD": 0.013},
+                    "MULTI_AZ_1": {"SSD": 0.230, "HDD": 0.025}
+                },
+                "throughput": {
+                    "SINGLE_AZ_1": 2.20,
+                    "SINGLE_AZ_2": 2.20,
+                    "MULTI_AZ_1": 4.50
+                },
+                "iops": {
+                    "SINGLE_AZ_1": 0.012,
+                    "SINGLE_AZ_2": 0.012,
+                    "MULTI_AZ_1": 0.024
+                },
+                "iops_baseline_per_gb": 3
+            },
+            "OPENZFS": {
+                "storage": {
+                    "SINGLE_AZ_1": 0.090,
+                    "SINGLE_AZ_2": 0.090,
+                    "SINGLE_AZ_HA_1": 0.090,
+                    "SINGLE_AZ_HA_2": 0.090,
+                    "MULTI_AZ_1": 0.180
+                },
+                "throughput": {
+                    "SINGLE_AZ_1": 0.26,
+                    "SINGLE_AZ_2": 0.26,
+                    "SINGLE_AZ_HA_1": 0.52,
+                    "SINGLE_AZ_HA_2": 0.52,
+                    "MULTI_AZ_1": 0.87
+                },
+                "iops": {
+                    "SINGLE_AZ_1": 0.006,
+                    "SINGLE_AZ_2": 0.006,
+                    "SINGLE_AZ_HA_1": 0.012,
+                    "SINGLE_AZ_HA_2": 0.012,
+                    "MULTI_AZ_1": 0.024
+                },
+                "iops_baseline_per_gb": 3
+            },
+            "LUSTRE": {
+                "storage": {
+                    "SCRATCH_1": 0.140,
+                    "SCRATCH_2": 0.140,
+                    "PERSISTENT_1": {
+                        "SSD": {"50": 0.140, "100": 0.190, "200": 0.290}
+                    },
+                    "PERSISTENT_2": {
+                        "SSD": {"125": 0.145, "250": 0.210, "500": 0.340, "1000": 0.600},
+                        "HDD": {"12": 0.025, "40": 0.083},
+                        "HDD_CACHE": {"12": 0.041, "40": 0.099}
+                    }
+                },
+                "metadata_iops": 0.066,
+                "metadata_iops_prev_gen": 0.055,
+                "metadata_iops_baseline_per_gb": 1.25,
+                "throughput": 0.52
+            }
+        }
+    }
+}

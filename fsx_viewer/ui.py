@@ -634,6 +634,32 @@ class DetailUI:
         bar.append("░" * empty, style="dim")
         return bar
     
+    def _render_pricing_breakdown(self, fs: FileSystem) -> Text:
+        """Render itemized monthly cost breakdown."""
+        text = Text()
+        if self._disable_pricing or fs.pricing_breakdown is None:
+            return text
+        
+        b = fs.pricing_breakdown
+        text.append("Monthly Cost: ", style="dim")
+        
+        parts = []
+        if b.storage > 0:
+            parts.append(f"Storage ${b.storage:,.0f}")
+        if b.throughput > 0:
+            parts.append(f"Throughput ${b.throughput:,.0f}")
+        if b.iops > 0:
+            parts.append(f"IOPS ${b.iops:,.0f}")
+        if b.capacity_pool > 0:
+            parts.append(f"Cap Pool ${b.capacity_pool:,.0f}")
+        
+        if parts:
+            text.append(" + ".join(parts))
+            text.append(f" = ", style="dim")
+        text.append(f"${b.total:,.0f}/mo", style="bold green")
+        
+        return text
+    
     def _render_header(self, fs: FileSystem) -> Text:
         """Render the file system header with basic info."""
         header = Text()
@@ -783,19 +809,16 @@ class DetailUI:
         
         # Header section
         header = self._render_header(fs)
-        
-        # File system metrics
         metrics = self._render_fs_metrics(fs)
+        pricing = self._render_pricing_breakdown(fs)
         
         # Volume table with pagination
         if volumes:
             total_pages = self._get_page_count(len(volumes))
             page_volumes = self._get_page_items(volumes)
             volume_table = self._render_volume_table(page_volumes, "ONTAP")
-            
-            # Page info
             page_info = self._render_page_info(len(volumes))
-            content = Group(header, metrics, Text(""), volume_table, Text(""), page_info)
+            content = Group(header, metrics, pricing, Text(""), volume_table, Text(""), page_info)
         else:
             content = Group(
                 header,
@@ -814,21 +837,17 @@ class DetailUI:
         """Render OpenZFS file system with volume table."""
         volumes = self._get_sorted_volumes()
         
-        # Header section
         header = self._render_header(fs)
-        
-        # File system metrics
         metrics = self._render_fs_metrics(fs)
+        pricing = self._render_pricing_breakdown(fs)
         
         # Volume table with pagination (pass fs capacity for volumes without quota)
         if volumes:
             total_pages = self._get_page_count(len(volumes))
             page_volumes = self._get_page_items(volumes)
             volume_table = self._render_volume_table(page_volumes, "OPENZFS", fs.storage_capacity)
-            
-            # Page info
             page_info = self._render_page_info(len(volumes))
-            content = Group(header, metrics, Text(""), volume_table, Text(""), page_info)
+            content = Group(header, metrics, pricing, Text(""), volume_table, Text(""), page_info)
         else:
             content = Group(
                 header,
@@ -849,9 +868,8 @@ class DetailUI:
         
         # Header with file system info
         header = self._render_header(fs)
-        
-        # File system metrics
         metrics = self._render_fs_metrics(fs)
+        pricing = self._render_pricing_breakdown(fs)
         
         # MDS table
         mds_table = Table(
@@ -880,11 +898,12 @@ class DetailUI:
             
             # Page info
             page_info = self._render_page_info(len(mds_servers))
-            content = Group(header, metrics, Text(""), mds_table, Text(""), page_info)
+            content = Group(header, metrics, pricing, Text(""), mds_table, Text(""), page_info)
         else:
             content = Group(
                 header,
                 metrics,
+                pricing,
                 Text(""),
                 Text("Discovering MDS servers...", style="dim italic"),
             )
@@ -897,8 +916,8 @@ class DetailUI:
     
     def _render_windows_detail(self, fs: FileSystem) -> Panel:
         """Render Windows file system (no sub-resources)."""
-        # Header with file system info
         header = self._render_header(fs)
+        pricing = self._render_pricing_breakdown(fs)
         
         # Metrics table
         metrics_table = Table(
@@ -943,7 +962,7 @@ class DetailUI:
         # Message about no sub-resources
         no_sub_msg = Text("No sub-resources available for Windows file systems", style="dim italic")
         
-        content = Group(header, Text(""), metrics_table, Text(""), no_sub_msg)
+        content = Group(header, pricing, Text(""), metrics_table, Text(""), no_sub_msg)
         
         return Panel(
             content,

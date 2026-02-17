@@ -16,6 +16,20 @@ class FileSystemType(str, Enum):
 
 
 @dataclass
+class PricingBreakdown:
+    """Itemized monthly cost breakdown for a file system."""
+    storage: float = 0.0
+    throughput: float = 0.0
+    iops: float = 0.0
+    capacity_pool: float = 0.0
+
+    @property
+    def total(self) -> float:
+        """Total monthly cost."""
+        return self.storage + self.throughput + self.iops + self.capacity_pool
+
+
+@dataclass
 class Metrics:
     """CloudWatch metrics for a file system."""
     used_capacity: int = 0  # GiB
@@ -24,6 +38,7 @@ class Metrics:
     read_iops: float = 0.0
     write_iops: float = 0.0
     cpu_utilization: float = 0.0  # percentage (0-100)
+    capacity_pool_used_gb: Optional[float] = None  # ONTAP capacity pool usage in GB
 
 
 @dataclass
@@ -52,6 +67,8 @@ class FileSystem:
     
     # Pricing
     hourly_price: float = 0.0
+    pricing_breakdown: Optional['PricingBreakdown'] = None
+    capacity_pool_used_gb: Optional[float] = None
     
     # Display state
     visible: bool = True
@@ -72,11 +89,15 @@ class FileSystem:
         return self.read_throughput + self.write_throughput
     
     def monthly_price(self) -> float:
-        """Return estimated monthly cost (730 hours per month average)."""
+        """Return estimated monthly cost."""
+        if self.pricing_breakdown is not None:
+            return self.pricing_breakdown.total
         return self.hourly_price * 730
     
     def has_price(self) -> bool:
         """Return True if pricing data is available."""
+        if self.pricing_breakdown is not None:
+            return self.pricing_breakdown.total > 0
         return self.hourly_price > 0
     
     def update_metrics(self, metrics: Metrics) -> None:
@@ -87,10 +108,16 @@ class FileSystem:
         self.read_iops = metrics.read_iops
         self.write_iops = metrics.write_iops
         self.cpu_utilization = metrics.cpu_utilization
+        if metrics.capacity_pool_used_gb is not None:
+            self.capacity_pool_used_gb = metrics.capacity_pool_used_gb
     
-    def set_price(self, price: float) -> None:
-        """Set the hourly price."""
-        self.hourly_price = price
+    def set_price(self, price) -> None:
+        """Set pricing. Accepts float (hourly) or PricingBreakdown (monthly)."""
+        if isinstance(price, PricingBreakdown):
+            self.pricing_breakdown = price
+            self.hourly_price = price.total / 730 if price.total > 0 else 0.0
+        else:
+            self.hourly_price = price
     
     def show(self) -> None:
         """Mark the file system as visible."""

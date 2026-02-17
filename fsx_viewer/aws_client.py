@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Tuple
 
-from .model import FileSystem, FileSystemType, Metrics, Volume, MetadataServer
+from .model import FileSystem, FileSystemType, Metrics, Volume, MetadataServer, PricingBreakdown
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +267,8 @@ class CloudWatchClient:
                     metrics.cpu_utilization = value  # Already a percentage
                 elif metric_id == 'cpu_util_avg':
                     metrics.cpu_utilization = value  # Average from SEARCH expression
-            
+                elif metric_id == 'capacity_pool_used':
+                    metrics.capacity_pool_used_gb = value / (1024 * 1024 * 1024)  # bytes -> GB            
             # For Lustre, fetch CPU separately with FileServer dimension
             if fs_type == FileSystemType.LUSTRE and metrics.cpu_utilization == 0:
                 cpu = self._get_lustre_cpu(fs_id, start_time, end_time)
@@ -1062,6 +1063,23 @@ class CloudWatchClient:
                     'Stat': 'Average',
                 },
             })
+            # Capacity pool usage for pricing
+            queries.append({
+                'Id': 'capacity_pool_used',
+                'MetricStat': {
+                    'Metric': {
+                        'Namespace': namespace,
+                        'MetricName': 'StorageUsed',
+                        'Dimensions': [
+                            dimension,
+                            {'Name': 'StorageTier', 'Value': 'StandardCapacityPool'},
+                            {'Name': 'DataType', 'Value': 'All'},
+                        ],
+                    },
+                    'Period': 60,
+                    'Stat': 'Average',
+                },
+            })
             # ONTAP has CPU utilization metric
             queries.append({
                 'Id': 'cpu_util',
@@ -1106,127 +1124,38 @@ class CloudWatchClient:
 
 
 class StaticPricingProvider:
-    """Pricing provider with embedded AWS pricing data for FSx file systems.
+    """Pricing provider using external JSON pricing data.
     
-    Prices are based on AWS Price List API data for us-east-1 region.
-    Pricing components:
-    - Storage: $/GB-Month for SSD or HDD
-    - Throughput: $/MBps-Month for provisioned throughput
-    - IOPS: $/IOPS-Month for provisioned IOPS
-    
-    Monthly prices are converted to hourly (divide by 730 hours/month).
+    Loads pricing from pricing_data.json for the specified region.
+    Returns PricingBreakdown with itemized monthly costs.
     """
-    
-    # FSx for ONTAP pricing (us-east-1)
-    ONTAP_PRICES = {
-        'storage': {
-            'SINGLE_AZ_1': {'SSD': 0.125},      # $/GB-Mo
-            'SINGLE_AZ_2': {'SSD': 0.125},
-            'MULTI_AZ_1': {'SSD': 0.250},
-            'MULTI_AZ_2': {'SSD': 0.250},
-        },
-        'throughput': {
-            'SINGLE_AZ_1': 0.72,   # $/MBps-Mo
-            'SINGLE_AZ_2': 1.60,
-            'MULTI_AZ_1': 1.20,
-            'MULTI_AZ_2': 2.50,
-        },
-        'iops': {
-            'SINGLE_AZ_1': 0.017,  # $/IOPS-Mo
-            'SINGLE_AZ_2': 0.017,
-            'MULTI_AZ_1': 0.034,
-            'MULTI_AZ_2': 0.034,
-        },
-        'capacity_pool': 0.0219,  # $/GB-Mo for capacity pool (Single-AZ)
-    }
-    
-    # FSx for OpenZFS pricing (us-east-1)
-    OPENZFS_PRICES = {
-        'storage': {
-            'SINGLE_AZ_1': {'SSD': 0.09},
-            'SINGLE_AZ_2': {'SSD': 0.09},
-            'SINGLE_AZ_HA_1': {'SSD': 0.09},
-            'SINGLE_AZ_HA_2': {'SSD': 0.09},
-            'MULTI_AZ_1': {'SSD': 0.18},
-        },
-        'throughput': {
-            'SINGLE_AZ_1': 0.26,
-            'SINGLE_AZ_2': 0.26,
-            'SINGLE_AZ_HA_1': 0.52,
-            'SINGLE_AZ_HA_2': 0.52,
-            'MULTI_AZ_1': 0.87,
-        },
-        'iops': {
-            'SINGLE_AZ_1': 0.006,
-            'SINGLE_AZ_2': 0.006,
-            'SINGLE_AZ_HA_1': 0.012,
-            'SINGLE_AZ_HA_2': 0.012,
-            'MULTI_AZ_1': 0.024,
-        },
-    }
-    
-    # FSx for Windows File Server pricing (us-east-1)
-    WINDOWS_PRICES = {
-        'storage': {
-            'SINGLE_AZ_1': {'SSD': 0.13, 'HDD': 0.013},
-            'SINGLE_AZ_2': {'SSD': 0.13, 'HDD': 0.013},
-            'MULTI_AZ_1': {'SSD': 0.23, 'HDD': 0.025},
-        },
-        'throughput': {
-            'SINGLE_AZ_1': 2.20,
-            'SINGLE_AZ_2': 2.20,
-            'MULTI_AZ_1': 4.50,
-        },
-        'iops': {
-            'SINGLE_AZ_1': 0.012,
-            'SINGLE_AZ_2': 0.012,
-            'MULTI_AZ_1': 0.024,
-        },
-    }
-    
-    # FSx for Lustre pricing (us-east-1)
-    # Lustre pricing is based on storage type and throughput tier
-    LUSTRE_PRICES = {
-        'storage': {
-            # SSD tiers by throughput (MB/s per TiB)
-            'SCRATCH_1': {'SSD': 0.14},
-            'SCRATCH_2': {'SSD': 0.14},
-            'PERSISTENT_1': {
-                'SSD': {
-                    50: 0.14,    # 50 MB/s per TiB
-                    100: 0.19,   # 100 MB/s per TiB
-                    200: 0.29,   # 200 MB/s per TiB
-                },
-            },
-            'PERSISTENT_2': {
-                'SSD': {
-                    125: 0.145,  # 125 MB/s per TiB
-                    250: 0.21,   # 250 MB/s per TiB
-                    500: 0.34,   # 500 MB/s per TiB
-                    1000: 0.60,  # 1000 MB/s per TiB
-                },
-            },
-        },
-        'hdd': {
-            12: 0.025,   # 12 MB/s per TiB
-            40: 0.083,   # 40 MB/s per TiB
-        },
-        'metadata_iops': 0.055,  # $/IOPS-Mo for metadata IOPS
-        'throughput': 0.52,      # $/MBps-Mo for Intelligent-Tiering
-    }
-    
-    # Hours per month for conversion
-    HOURS_PER_MONTH = 730
     
     def __init__(self, region: str):
         self._region = region
+        self._data = self._load_pricing_data(region)
     
-    def file_system_price(self, fs: FileSystem) -> Optional[float]:
-        """Calculate the hourly price for a file system based on its configuration.
+    def _load_pricing_data(self, region: str) -> dict:
+        """Load pricing JSON and extract region-specific data."""
+        import json
+        from pathlib import Path
+        try:
+            pricing_path = Path(__file__).parent / 'pricing_data.json'
+            with open(pricing_path) as f:
+                all_data = json.load(f)
+            return all_data.get('regions', {}).get(region, {})
+        except Exception as e:
+            logger.warning(f"Failed to load pricing data: {e}")
+            return {}
+    
+    def file_system_price(self, fs: FileSystem) -> Optional[PricingBreakdown]:
+        """Calculate itemized monthly pricing breakdown.
         
         Returns:
-            Hourly price in USD, or None if pricing cannot be calculated
+            PricingBreakdown with monthly costs, or None if pricing unavailable
         """
+        if not self._data:
+            return None
+        
         if fs.type == FileSystemType.ONTAP:
             return self._calculate_ontap_price(fs)
         elif fs.type == FileSystemType.OPENZFS:
@@ -1238,107 +1167,116 @@ class StaticPricingProvider:
         
         return None
     
-    def _calculate_ontap_price(self, fs: FileSystem) -> float:
-        """Calculate hourly price for ONTAP file system."""
-        monthly_cost = 0.0
+    def _calculate_ontap_price(self, fs: FileSystem) -> PricingBreakdown:
+        """Calculate monthly pricing for ONTAP file system."""
+        prices = self._data.get('ONTAP', {})
+        deployment = fs.deployment_type or 'SINGLE_AZ_1'
+        breakdown = PricingBreakdown()
+        
+        # SSD storage (provisioned)
+        breakdown.storage = fs.storage_capacity * prices.get('storage', {}).get(deployment, 0)
+        
+        # Capacity pool (usage-based from CloudWatch)
+        if fs.capacity_pool_used_gb and fs.capacity_pool_used_gb > 0:
+            cp_price = prices.get('capacity_pool', {}).get(deployment, 0)
+            breakdown.capacity_pool = fs.capacity_pool_used_gb * cp_price
+        
+        # Throughput
+        breakdown.throughput = fs.throughput_capacity * prices.get('throughput', {}).get(deployment, 0)
+        
+        # IOPS (above baseline)
+        baseline_per_gb = prices.get('iops_baseline_per_gb', 3)
+        baseline_iops = fs.storage_capacity * baseline_per_gb
+        if fs.provisioned_iops > baseline_iops:
+            extra = fs.provisioned_iops - baseline_iops
+            breakdown.iops = extra * prices.get('iops', {}).get(deployment, 0)
+        
+        return breakdown
+    
+    def _calculate_openzfs_price(self, fs: FileSystem) -> Optional[PricingBreakdown]:
+        """Calculate monthly pricing for OpenZFS file system."""
+        prices = self._data.get('OPENZFS', {})
         deployment = fs.deployment_type or 'SINGLE_AZ_1'
         
-        # Storage cost
-        storage_prices = self.ONTAP_PRICES['storage'].get(deployment, {'SSD': 0.125})
-        storage_price = storage_prices.get('SSD', 0.125)
-        monthly_cost += fs.storage_capacity * storage_price
+        # Intelligent-Tiering: N/A
+        storage_price = prices.get('storage', {}).get(deployment)
+        if storage_price is None:
+            return None
         
-        # Throughput cost
-        throughput_price = self.ONTAP_PRICES['throughput'].get(deployment, 0.72)
-        monthly_cost += fs.throughput_capacity * throughput_price
+        breakdown = PricingBreakdown()
+        breakdown.storage = fs.storage_capacity * storage_price
+        breakdown.throughput = fs.throughput_capacity * prices.get('throughput', {}).get(deployment, 0)
         
-        # IOPS cost (only if provisioned above baseline)
-        # ONTAP baseline is 3 IOPS per GB, charged for IOPS above that
-        baseline_iops = fs.storage_capacity * 3
+        # IOPS (above baseline)
+        baseline_per_gb = prices.get('iops_baseline_per_gb', 3)
+        baseline_iops = fs.storage_capacity * baseline_per_gb
         if fs.provisioned_iops > baseline_iops:
-            iops_price = self.ONTAP_PRICES['iops'].get(deployment, 0.017)
-            extra_iops = fs.provisioned_iops - baseline_iops
-            monthly_cost += extra_iops * iops_price
+            extra = fs.provisioned_iops - baseline_iops
+            breakdown.iops = extra * prices.get('iops', {}).get(deployment, 0)
         
-        return monthly_cost / self.HOURS_PER_MONTH
+        return breakdown
     
-    def _calculate_openzfs_price(self, fs: FileSystem) -> float:
-        """Calculate hourly price for OpenZFS file system."""
-        monthly_cost = 0.0
-        deployment = fs.deployment_type or 'SINGLE_AZ_1'
-        
-        # Storage cost
-        storage_prices = self.OPENZFS_PRICES['storage'].get(deployment, {'SSD': 0.09})
-        storage_price = storage_prices.get('SSD', 0.09)
-        monthly_cost += fs.storage_capacity * storage_price
-        
-        # Throughput cost
-        throughput_price = self.OPENZFS_PRICES['throughput'].get(deployment, 0.26)
-        monthly_cost += fs.throughput_capacity * throughput_price
-        
-        # IOPS cost (only if provisioned above baseline)
-        # OpenZFS baseline is 3 IOPS per GB, charged for IOPS above that
-        baseline_iops = fs.storage_capacity * 3
-        if fs.provisioned_iops > baseline_iops:
-            iops_price = self.OPENZFS_PRICES['iops'].get(deployment, 0.006)
-            extra_iops = fs.provisioned_iops - baseline_iops
-            monthly_cost += extra_iops * iops_price
-        
-        return monthly_cost / self.HOURS_PER_MONTH
-    
-    def _calculate_windows_price(self, fs: FileSystem) -> float:
-        """Calculate hourly price for Windows File Server file system."""
-        monthly_cost = 0.0
+    def _calculate_windows_price(self, fs: FileSystem) -> PricingBreakdown:
+        """Calculate monthly pricing for Windows File Server file system."""
+        prices = self._data.get('WINDOWS', {})
         deployment = fs.deployment_type or 'SINGLE_AZ_1'
         storage_type = fs.storage_type or 'SSD'
+        breakdown = PricingBreakdown()
         
-        # Storage cost
-        storage_prices = self.WINDOWS_PRICES['storage'].get(deployment, {'SSD': 0.13, 'HDD': 0.013})
-        storage_price = storage_prices.get(storage_type, 0.13)
-        monthly_cost += fs.storage_capacity * storage_price
+        # Storage (SSD or HDD)
+        storage_prices = prices.get('storage', {}).get(deployment, {})
+        breakdown.storage = fs.storage_capacity * storage_prices.get(storage_type, 0)
         
-        # Throughput cost
-        throughput_price = self.WINDOWS_PRICES['throughput'].get(deployment, 2.20)
-        monthly_cost += fs.throughput_capacity * throughput_price
+        # Throughput
+        breakdown.throughput = fs.throughput_capacity * prices.get('throughput', {}).get(deployment, 0)
         
-        # IOPS cost (SSD only, above baseline)
-        # Windows SSD baseline is 3 IOPS per GB
+        # IOPS (SSD only, above baseline)
         if storage_type == 'SSD' and fs.provisioned_iops > 0:
-            baseline_iops = fs.storage_capacity * 3
+            baseline_per_gb = prices.get('iops_baseline_per_gb', 3)
+            baseline_iops = fs.storage_capacity * baseline_per_gb
             if fs.provisioned_iops > baseline_iops:
-                iops_price = self.WINDOWS_PRICES['iops'].get(deployment, 0.012)
-                extra_iops = fs.provisioned_iops - baseline_iops
-                monthly_cost += extra_iops * iops_price
+                extra = fs.provisioned_iops - baseline_iops
+                breakdown.iops = extra * prices.get('iops', {}).get(deployment, 0)
         
-        return monthly_cost / self.HOURS_PER_MONTH
+        return breakdown
     
-    def _calculate_lustre_price(self, fs: FileSystem) -> float:
-        """Calculate hourly price for Lustre file system."""
-        monthly_cost = 0.0
+    def _calculate_lustre_price(self, fs: FileSystem) -> Optional[PricingBreakdown]:
+        """Calculate monthly pricing for Lustre file system."""
+        prices = self._data.get('LUSTRE', {})
         deployment = fs.deployment_type or 'SCRATCH_2'
+        breakdown = PricingBreakdown()
+        
+        # Storage price depends on deployment type and throughput tier
+        storage_price = self._lustre_storage_price(fs, prices, deployment)
+        if storage_price is None:
+            return None  # Intelligent-Tiering or unknown config
+        
+        breakdown.storage = fs.storage_capacity * storage_price
+        
+        # Metadata IOPS (above baseline)
+        baseline_per_gb = prices.get('metadata_iops_baseline_per_gb', 1.25)
+        baseline_iops = fs.storage_capacity * baseline_per_gb
+        if fs.provisioned_iops > baseline_iops:
+            extra = fs.provisioned_iops - baseline_iops
+            breakdown.iops = extra * prices.get('metadata_iops', 0.066)
+        
+        return breakdown
+    
+    def _lustre_storage_price(self, fs: FileSystem, prices: dict, deployment: str) -> Optional[float]:
+        """Look up Lustre storage price by deployment type and throughput tier."""
+        storage = prices.get('storage', {})
         throughput_per_tib = fs.throughput_capacity or 200
         
-        # Determine storage price based on deployment type and throughput
         if deployment in ('SCRATCH_1', 'SCRATCH_2'):
-            storage_price = 0.14  # Scratch storage
-        elif deployment == 'PERSISTENT_1':
-            # PERSISTENT_1 SSD pricing by throughput tier
-            ssd_prices = self.LUSTRE_PRICES['storage']['PERSISTENT_1'].get('SSD', {})
-            storage_price = ssd_prices.get(throughput_per_tib, 0.19)
-        elif deployment == 'PERSISTENT_2':
-            # PERSISTENT_2 SSD pricing by throughput tier
-            ssd_prices = self.LUSTRE_PRICES['storage']['PERSISTENT_2'].get('SSD', {})
-            storage_price = ssd_prices.get(throughput_per_tib, 0.145)
-        elif 'HDD' in deployment or fs.storage_type == 'HDD':
-            # HDD pricing by throughput tier
-            storage_price = self.LUSTRE_PRICES['hdd'].get(throughput_per_tib, 0.025)
-        else:
-            storage_price = 0.14  # Default to scratch pricing
+            return storage.get(deployment, 0.14)
         
-        monthly_cost += fs.storage_capacity * storage_price
+        deploy_prices = storage.get(deployment, {})
+        if not deploy_prices:
+            return None
         
-        # Metadata IOPS cost (if provisioned)
-        if fs.provisioned_iops > 0:
-            monthly_cost += fs.provisioned_iops * self.LUSTRE_PRICES['metadata_iops']
-        
-        return monthly_cost / self.HOURS_PER_MONTH
+        # For PERSISTENT types, look up by storage type and throughput tier
+        storage_type = fs.storage_type or 'SSD'
+        tier_prices = deploy_prices.get(storage_type, {})
+        if isinstance(tier_prices, dict):
+            return tier_prices.get(str(throughput_per_tib), tier_prices.get(str(min(int(k) for k in tier_prices.keys()))) if tier_prices else None)
+        return tier_prices if isinstance(tier_prices, (int, float)) else None

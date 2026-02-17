@@ -17,6 +17,7 @@ from .model import (
     Metrics,
     Store,
     Stats,
+    PricingBreakdown,
 )
 from .ui import UI, Style, make_sorter
 
@@ -486,3 +487,112 @@ def test_pagination_all_items_covered(file_systems, page_size):
     # All items should be covered exactly once
     assert len(all_items) == len(file_systems)
     assert set(fs.id for fs in all_items) == set(fs.id for fs in file_systems)
+
+
+# =============================================================================
+# Pricing Breakdown Properties
+# =============================================================================
+
+@given(
+    storage=st.floats(min_value=0, max_value=100000, allow_nan=False, allow_infinity=False),
+    throughput=st.floats(min_value=0, max_value=100000, allow_nan=False, allow_infinity=False),
+    iops=st.floats(min_value=0, max_value=100000, allow_nan=False, allow_infinity=False),
+    capacity_pool=st.floats(min_value=0, max_value=100000, allow_nan=False, allow_infinity=False),
+)
+def test_pricing_breakdown_total_equals_sum(storage, throughput, iops, capacity_pool):
+    """Property: PricingBreakdown.total always equals sum of components."""
+    b = PricingBreakdown(storage=storage, throughput=throughput, iops=iops, capacity_pool=capacity_pool)
+    assert abs(b.total - (storage + throughput + iops + capacity_pool)) < 1e-6
+
+
+@given(
+    storage=st.floats(min_value=0, max_value=10000, allow_nan=False, allow_infinity=False),
+    throughput=st.floats(min_value=0, max_value=10000, allow_nan=False, allow_infinity=False),
+)
+def test_pricing_breakdown_set_price_backward_compat(storage, throughput):
+    """Property: set_price(PricingBreakdown) derives hourly_price for backward compat."""
+    b = PricingBreakdown(storage=storage, throughput=throughput)
+    fs = make_file_system("fs-99999999", "test", FileSystemType.ONTAP, 100, 50)
+    fs.set_price(b)
+    
+    assert fs.pricing_breakdown is b
+    if b.total > 0:
+        assert abs(fs.hourly_price - b.total / 730) < 1e-6
+        assert abs(fs.monthly_price() - b.total) < 1e-6
+        assert fs.has_price()
+    else:
+        assert fs.hourly_price == 0.0
+
+
+@given(hourly_price=st.floats(min_value=0, max_value=10000, allow_nan=False, allow_infinity=False))
+def test_pricing_set_price_float_still_works(hourly_price):
+    """Property: set_price(float) still works for legacy callers."""
+    fs = make_file_system("fs-99999999", "test", FileSystemType.ONTAP, 100, 50)
+    fs.set_price(hourly_price)
+    assert fs.hourly_price == hourly_price
+    assert fs.pricing_breakdown is None
+
+
+@given(
+    storage_capacity=st.integers(min_value=1, max_value=100000),
+    throughput_capacity=st.integers(min_value=0, max_value=10000),
+    provisioned_iops=st.integers(min_value=0, max_value=500000),
+)
+def test_pricing_ontap_components_non_negative(storage_capacity, throughput_capacity, provisioned_iops):
+    """Property: All ONTAP pricing components are non-negative."""
+    from .aws_client import StaticPricingProvider
+    provider = StaticPricingProvider('us-east-1')
+    fs = make_file_system("fs-99999999", "test", FileSystemType.ONTAP, storage_capacity, 0)
+    fs.deployment_type = 'SINGLE_AZ_1'
+    fs.throughput_capacity = throughput_capacity
+    fs.provisioned_iops = provisioned_iops
+    
+    result = provider.file_system_price(fs)
+    assert result is not None
+    assert result.storage >= 0
+    assert result.throughput >= 0
+    assert result.iops >= 0
+    assert result.capacity_pool >= 0
+    assert result.total >= 0
+
+
+@given(
+    storage_capacity=st.integers(min_value=1, max_value=100000),
+    provisioned_iops=st.integers(min_value=0, max_value=500000),
+)
+def test_pricing_iops_zero_within_baseline(storage_capacity, provisioned_iops):
+    """Property: IOPS cost is 0 when provisioned IOPS <= baseline (3 per GB)."""
+    from .aws_client import StaticPricingProvider
+    provider = StaticPricingProvider('us-east-1')
+    
+    assume(provisioned_iops <= storage_capacity * 3)
+    
+    fs = make_file_system("fs-99999999", "test", FileSystemType.ONTAP, storage_capacity, 0)
+    fs.deployment_type = 'SINGLE_AZ_1'
+    fs.provisioned_iops = provisioned_iops
+    
+    result = provider.file_system_price(fs)
+    assert result is not None
+    assert result.iops == 0.0
+
+
+def test_pricing_unknown_region_returns_none():
+    """Property: Provider returns None for unknown regions."""
+    from .aws_client import StaticPricingProvider
+    provider = StaticPricingProvider('xx-nowhere-99')
+    fs = make_file_system("fs-99999999", "test", FileSystemType.ONTAP, 1024, 0)
+    assert provider.file_system_price(fs) is None
+
+
+@given(capacity_pool_gb=st.floats(min_value=0.1, max_value=100000, allow_nan=False, allow_infinity=False))
+def test_pricing_ontap_capacity_pool_from_cloudwatch(capacity_pool_gb):
+    """Property: ONTAP capacity pool cost > 0 when usage > 0."""
+    from .aws_client import StaticPricingProvider
+    provider = StaticPricingProvider('us-east-1')
+    fs = make_file_system("fs-99999999", "test", FileSystemType.ONTAP, 1024, 0)
+    fs.deployment_type = 'SINGLE_AZ_1'
+    fs.capacity_pool_used_gb = capacity_pool_gb
+    
+    result = provider.file_system_price(fs)
+    assert result is not None
+    assert result.capacity_pool > 0
