@@ -104,9 +104,12 @@ def _run_summary_mode(
     style: Style,
 ) -> int:
     """Run the summary view mode (default)."""
+    _is_win = sys.platform == 'win32'
+    
     # Switch to alternate screen buffer once for the entire session
-    sys.stdout.write('\033[?1049h')
-    sys.stdout.flush()
+    if not _is_win:
+        sys.stdout.write('\033[?1049h')
+        sys.stdout.flush()
     
     try:
         while True:
@@ -134,8 +137,9 @@ def _run_summary_mode(
                 ui.stop()
                 controller.stop()
                 # Restore screen before exit
-                sys.stdout.write('\033[?1049l')
-                sys.stdout.flush()
+                if not _is_win:
+                    sys.stdout.write('\033[?1049l')
+                    sys.stdout.flush()
                 sys.exit(0)
             
             signal.signal(signal.SIGINT, signal_handler)
@@ -175,8 +179,9 @@ def _run_summary_mode(
                 return 0
     finally:
         # Restore original screen buffer
-        sys.stdout.write('\033[?1049l')
-        sys.stdout.flush()
+        if not _is_win:
+            sys.stdout.write('\033[?1049l')
+            sys.stdout.flush()
 
 
 def _run_detail_mode_for_fs(
@@ -217,7 +222,7 @@ def _run_detail_mode_for_fs(
     def signal_handler(sig, frame):
         ui.stop()
         controller.stop()
-        if manage_screen:
+        if manage_screen and sys.platform != 'win32':
             sys.stdout.write('\033[?1049l')
             sys.stdout.flush()
         sys.exit(0)
