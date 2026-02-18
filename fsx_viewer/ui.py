@@ -458,12 +458,14 @@ class UI:
         
         _is_win = sys.platform == 'win32'
         
-        # Switch to alternate screen buffer (Unix only - Windows doesn't support these)
+        # Switch to alternate screen buffer (Unix only)
         if not _is_win:
             if manage_screen:
                 sys.stdout.write('\033[?1049h')
             sys.stdout.write('\033[H\033[2J')
             sys.stdout.flush()
+        else:
+            import os; os.system('cls')
         
         try:
             with Live(
@@ -1016,6 +1018,8 @@ class DetailUI:
                 sys.stdout.write('\033[?1049h')
             sys.stdout.write('\033[H\033[2J')
             sys.stdout.flush()
+        else:
+            import os; os.system('cls')
         
         try:
             with Live(
