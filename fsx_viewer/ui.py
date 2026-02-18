@@ -471,9 +471,35 @@ class UI:
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
-                import select
-                import termios
-                import tty
+                if sys.platform == 'win32':
+                    import msvcrt
+                    while self._running:
+                        live.update(self.render_full())
+                        if msvcrt.kbhit():
+                            key = msvcrt.getwch()
+                            if key == '\xe0' or key == '\x00':  # Special key prefix
+                                key2 = msvcrt.getwch()
+                                if key2 == 'H':    self.select_prev()   # Up
+                                elif key2 == 'P':  self.select_next()   # Down
+                                elif key2 == 'K':  self.prev_page(); self._selected_index = 0  # Left
+                                elif key2 == 'M':  self.next_page(); self._selected_index = 0  # Right
+                            elif key == 'q' or key == '\x03':
+                                self._running = False; break
+                            elif key == 'j':  self.select_next()
+                            elif key == 'k':  self.select_prev()
+                            elif key == '\r':
+                                selected = self._get_current_selection()
+                                if selected:
+                                    self._selected_fs_id = selected.id
+                                    self._running = False; break
+                            elif key == 'l':  self.next_page(); self._selected_index = 0
+                            elif key == 'h':  self.prev_page(); self._selected_index = 0
+                        else:
+                            import time; time.sleep(0.1)
+                else:
+                    import select
+                    import termios
+                    import tty
                 
                 old_settings = termios.tcgetattr(sys.stdin)
                 try:
@@ -994,9 +1020,26 @@ class DetailUI:
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
-                import select
-                import termios
-                import tty
+                if sys.platform == 'win32':
+                    import msvcrt
+                    while self._running:
+                        live.update(self.render())
+                        if msvcrt.kbhit():
+                            key = msvcrt.getwch()
+                            if key == '\xe0' or key == '\x00':
+                                key2 = msvcrt.getwch()
+                                if key2 == 'K':    self.prev_page()   # Left
+                                elif key2 == 'M':  self.next_page()   # Right
+                            elif key == 'q' or key == '\x03':
+                                self._running = False; break
+                            elif key == 'l':  self.next_page()
+                            elif key == 'h':  self.prev_page()
+                        else:
+                            import time; time.sleep(0.1)
+                else:
+                    import select
+                    import termios
+                    import tty
                 
                 old_settings = termios.tcgetattr(sys.stdin)
                 try:
