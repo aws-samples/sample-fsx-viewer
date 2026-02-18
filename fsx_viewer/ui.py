@@ -456,18 +456,21 @@ class UI:
         self._running = True
         self._selected_fs_id = None
         
-        # Switch to alternate screen buffer and move cursor to top (if managing screen)
-        if manage_screen:
-            sys.stdout.write('\033[?1049h')  # Switch to alternate screen
-        sys.stdout.write('\033[H')       # Move cursor to top-left
-        sys.stdout.write('\033[2J')      # Clear screen
-        sys.stdout.flush()
+        _is_win = sys.platform == 'win32'
+        
+        # Switch to alternate screen buffer (Unix only - Windows doesn't support these)
+        if not _is_win:
+            if manage_screen:
+                sys.stdout.write('\033[?1049h')
+            sys.stdout.write('\033[H\033[2J')
+            sys.stdout.flush()
         
         try:
             with Live(
                 self.render_full(),
                 console=self._console,
                 refresh_per_second=2,
+                screen=_is_win,
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
@@ -553,7 +556,7 @@ class UI:
             self._console.print(self.render_full())
         finally:
             # Restore original screen buffer (only if we're managing it)
-            if manage_screen:
+            if not _is_win and manage_screen:
                 sys.stdout.write('\033[?1049l')
                 sys.stdout.flush()
     
@@ -1005,18 +1008,21 @@ class DetailUI:
         """
         self._running = True
         
-        # Switch to alternate screen buffer and move cursor to top (if managing screen)
-        if manage_screen:
-            sys.stdout.write('\033[?1049h')  # Switch to alternate screen
-        sys.stdout.write('\033[H')       # Move cursor to top-left
-        sys.stdout.write('\033[2J')      # Clear screen
-        sys.stdout.flush()
+        _is_win = sys.platform == 'win32'
+        
+        # Switch to alternate screen buffer (Unix only)
+        if not _is_win:
+            if manage_screen:
+                sys.stdout.write('\033[?1049h')
+            sys.stdout.write('\033[H\033[2J')
+            sys.stdout.flush()
         
         try:
             with Live(
                 self.render(),
                 console=self._console,
                 refresh_per_second=2,
+                screen=_is_win,
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
@@ -1075,7 +1081,7 @@ class DetailUI:
             self._console.print(self.render())
         finally:
             # Restore original screen buffer (only if we're managing it)
-            if manage_screen:
+            if not _is_win and manage_screen:
                 sys.stdout.write('\033[?1049l')
                 sys.stdout.flush()
     
