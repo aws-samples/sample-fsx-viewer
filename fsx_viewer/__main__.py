@@ -103,85 +103,67 @@ def _run_summary_mode(
     controller_config: ControllerConfig,
     style: Style,
 ) -> int:
-    """Run the summary view mode (default)."""
-    _is_win = sys.platform == 'win32'
-    
-    # Switch to alternate screen buffer once for the entire session
-    if not _is_win:
-        sys.stdout.write('\033[?1049h')
-        sys.stdout.flush()
-    
-    try:
-        while True:
-            # Create store and controller
-            store = Store()
-            controller = Controller(
+    """Run the summary view mode (default).
+
+    Rich's Live(screen=True) inside UI.run() owns the alternate screen buffer
+    for each mode; no manual ANSI toggles are needed here.
+    """
+    while True:
+        # Create store and controller
+        store = Store()
+        controller = Controller(
+            fsx_client=fsx_client,
+            cw_client=cw_client,
+            store=store,
+            pricing=pricing,
+            config=controller_config,
+        )
+
+        # Create UI
+        ui = UI(
+            store=store,
+            sort=config.sort,
+            style=style,
+            disable_pricing=config.disable_pricing,
+            region=config.region,
+        )
+
+        # Set up signal handlers for graceful shutdown
+        def signal_handler(sig, frame):
+            ui.stop()
+            controller.stop()
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
+        try:
+            controller.start()
+            ui.run()
+        except KeyboardInterrupt:
+            controller.stop()
+            return 0
+        finally:
+            controller.stop()
+
+        # Check if user selected a file system to view details
+        selected_fs_id = ui.get_selected_fs_id()
+        if selected_fs_id:
+            result = _run_detail_mode_for_fs(
+                file_system_id=selected_fs_id,
                 fsx_client=fsx_client,
                 cw_client=cw_client,
-                store=store,
                 pricing=pricing,
-                config=controller_config,
-            )
-            
-            # Create UI
-            ui = UI(
-                store=store,
-                sort=config.sort,
+                controller_config=controller_config,
                 style=style,
                 disable_pricing=config.disable_pricing,
+                sort=config.sort,
                 region=config.region,
             )
-            
-            # Set up signal handlers for graceful shutdown
-            def signal_handler(sig, frame):
-                ui.stop()
-                controller.stop()
-                # Restore screen before exit
-                if not _is_win:
-                    sys.stdout.write('\033[?1049l')
-                    sys.stdout.flush()
-                sys.exit(0)
-            
-            signal.signal(signal.SIGINT, signal_handler)
-            signal.signal(signal.SIGTERM, signal_handler)
-            
-            # Start controller and UI (don't let UI manage screen)
-            try:
-                controller.start()
-                ui.run(manage_screen=False)
-            except KeyboardInterrupt:
-                controller.stop()
-                return 0
-            finally:
-                controller.stop()
-            
-            # Check if user selected a file system to view details
-            selected_fs_id = ui.get_selected_fs_id()
-            if selected_fs_id:
-                # Run detail view for selected file system (don't manage screen)
-                result = _run_detail_mode_for_fs(
-                    file_system_id=selected_fs_id,
-                    fsx_client=fsx_client,
-                    cw_client=cw_client,
-                    pricing=pricing,
-                    controller_config=controller_config,
-                    style=style,
-                    disable_pricing=config.disable_pricing,
-                    sort=config.sort,
-                    manage_screen=False,
-                    region=config.region,
-                )
-                # After detail view exits, loop back to summary view
-                if result != 0:
-                    return result
-            else:
-                # User quit without selecting
-                return 0
-    finally:
-        # Restore original screen buffer
-        if not _is_win:
-            sys.stdout.write('\033[?1049l')
-            sys.stdout.flush()
+            if result != 0:
+                return result
+        else:
+            return 0
 
 
 def _run_detail_mode_for_fs(
@@ -193,11 +175,9 @@ def _run_detail_mode_for_fs(
     style: Style,
     disable_pricing: bool,
     sort: str = "name=asc",
-    manage_screen: bool = True,
     region: str = "us-east-1",
 ) -> int:
     """Run detail view for a specific file system (called from summary view)."""
-    # Create detail store and controller
     store = DetailStore()
     controller = DetailController(
         fsx_client=fsx_client,
@@ -207,8 +187,7 @@ def _run_detail_mode_for_fs(
         file_system_id=file_system_id,
         config=controller_config,
     )
-    
-    # Create detail UI
+
     ui = DetailUI(
         store=store,
         style=style,
@@ -217,23 +196,18 @@ def _run_detail_mode_for_fs(
         name_filter=controller_config.name_filter,
         region=region,
     )
-    
-    # Set up signal handlers for graceful shutdown
+
     def signal_handler(sig, frame):
         ui.stop()
         controller.stop()
-        if manage_screen and sys.platform != 'win32':
-            sys.stdout.write('\033[?1049l')
-            sys.stdout.flush()
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Start controller and UI
+
     try:
         controller.start()
-        ui.run(manage_screen=manage_screen)
+        ui.run()
     except FileSystemNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -241,7 +215,7 @@ def _run_detail_mode_for_fs(
         pass
     finally:
         controller.stop()
-    
+
     return 0
 
 
@@ -254,7 +228,6 @@ def _run_detail_mode(
     style: Style,
 ) -> int:
     """Run the detail view mode for a specific file system."""
-    # Create detail store and controller
     store = DetailStore()
     controller = DetailController(
         fsx_client=fsx_client,
@@ -264,8 +237,7 @@ def _run_detail_mode(
         file_system_id=config.file_system_id,
         config=controller_config,
     )
-    
-    # Create detail UI
+
     ui = DetailUI(
         store=store,
         style=style,
@@ -274,17 +246,15 @@ def _run_detail_mode(
         name_filter=config.name_filter,
         region=config.region,
     )
-    
-    # Set up signal handlers for graceful shutdown
+
     def signal_handler(sig, frame):
         ui.stop()
         controller.stop()
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Start controller and UI
+
     try:
         controller.start()
         ui.run()
@@ -295,7 +265,7 @@ def _run_detail_mode(
         pass
     finally:
         controller.stop()
-    
+
     return 0
 
 

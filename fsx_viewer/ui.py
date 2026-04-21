@@ -446,33 +446,26 @@ class UI:
         if self._current_page > 0:
             self._current_page -= 1
     
-    def run(self, refresh_callback: Optional[Callable[[], None]] = None, manage_screen: bool = True) -> None:
+    def run(self, refresh_callback: Optional[Callable[[], None]] = None) -> None:
         """Run the UI main loop with Live display.
-        
+
         Args:
             refresh_callback: Optional callback for refresh events
-            manage_screen: If True, manage alternate screen buffer. Set False when caller manages it.
         """
         self._running = True
         self._selected_fs_id = None
-        
+
         _is_win = sys.platform == 'win32'
-        
-        # Switch to alternate screen buffer (Unix only)
-        if not _is_win:
-            if manage_screen:
-                sys.stdout.write('\033[?1049h')
-            sys.stdout.write('\033[H\033[2J')
-            sys.stdout.flush()
-        else:
-            import os; os.system('cls')
-        
+
+        # Rich's Live(screen=True) owns the alternate screen buffer — no manual
+        # ANSI toggles or terminal clears are needed.
+
         try:
             with Live(
                 self.render_full(),
                 console=self._console,
                 refresh_per_second=4,
-                screen=_is_win,
+                screen=True,
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
@@ -592,12 +585,7 @@ class UI:
         except Exception:
             # Fallback for non-TTY environments
             self._console.print(self.render_full())
-        finally:
-            # Restore original screen buffer (only if we're managing it)
-            if not _is_win and manage_screen:
-                sys.stdout.write('\033[?1049l')
-                sys.stdout.flush()
-    
+
     def stop(self) -> None:
         """Stop the UI loop."""
         self._running = False
@@ -1148,32 +1136,25 @@ class DetailUI:
             border_style="blue",
         )
     
-    def run(self, refresh_callback: Optional[Callable[[], None]] = None, manage_screen: bool = True) -> None:
+    def run(self, refresh_callback: Optional[Callable[[], None]] = None) -> None:
         """Run the UI main loop with Live display.
-        
+
         Args:
             refresh_callback: Optional callback for refresh events
-            manage_screen: If True, manage alternate screen buffer. Set False when caller manages it.
         """
         self._running = True
-        
+
         _is_win = sys.platform == 'win32'
-        
-        # Switch to alternate screen buffer (Unix only)
-        if not _is_win:
-            if manage_screen:
-                sys.stdout.write('\033[?1049h')
-            sys.stdout.write('\033[H\033[2J')
-            sys.stdout.flush()
-        else:
-            import os; os.system('cls')
-        
+
+        # Rich's Live(screen=True) owns the alternate screen buffer — no manual
+        # ANSI toggles or terminal clears are needed.
+
         try:
             with Live(
                 self.render(),
                 console=self._console,
                 refresh_per_second=4,
-                screen=_is_win,
+                screen=True,
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
@@ -1311,12 +1292,7 @@ class DetailUI:
         except Exception:
             # Fallback for non-TTY environments
             self._console.print(self.render())
-        finally:
-            # Restore original screen buffer (only if we're managing it)
-            if not _is_win and manage_screen:
-                sys.stdout.write('\033[?1049l')
-                sys.stdout.flush()
-    
+
     def stop(self) -> None:
         """Stop the UI loop."""
         self._running = False
