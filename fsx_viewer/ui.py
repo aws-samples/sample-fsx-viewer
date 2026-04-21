@@ -469,7 +469,7 @@ class UI:
             with Live(
                 self.render_full(),
                 console=self._console,
-                auto_refresh=(_is_win),
+                auto_refresh=False,
                 refresh_per_second=4,
                 screen=_is_win,
                 vertical_overflow="visible",
@@ -1170,7 +1170,7 @@ class DetailUI:
             with Live(
                 self.render(),
                 console=self._console,
-                auto_refresh=(_is_win),
+                auto_refresh=False,
                 refresh_per_second=4,
                 screen=_is_win,
                 vertical_overflow="visible",
