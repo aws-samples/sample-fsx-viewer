@@ -12,6 +12,7 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
 - Estimated monthly costs with itemized breakdowns (storage, throughput, IOPS, capacity pool)
 - Pricing coverage across 36 AWS regions for all FSx types
 - Detail views with volume-level metrics (ONTAP/OpenZFS) and MDS CPU breakdown (Lustre)
+- S3 access point visibility on ONTAP/OpenZFS volumes with drill-down to alias / VPC / lifecycle
 - Filtering by type and name
 - Sorting by various fields (name, capacity, utilization, cost, creation time)
 - Keyboard navigation with vim-style controls
@@ -24,6 +25,7 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
 - IAM permissions:
   - `fsx:DescribeFileSystems`
   - `fsx:DescribeVolumes`
+  - `fsx:DescribeS3AccessPointAttachments` (optional; enables S3 access point column/drill-down for ONTAP/OpenZFS volumes)
   - `cloudwatch:GetMetricData`
   - `cloudwatch:ListMetrics`
 
@@ -163,6 +165,7 @@ Press `Enter` on a file system to view its details.
   - StorageUsed / StorageCapacity
   - Read/Write IOPS
   - Read/Write throughput (MiB/s)
+  - S3 access point count (`-`, `1`, `2`, …); press `Enter` on a selected volume to drill into a panel showing each access point's name, alias, lifecycle, and VPC scope
 
 **OpenZFS Detail View:**
 
@@ -171,6 +174,7 @@ Press `Enter` on a file system to view its details.
   - Used capacity / Quota (or file system capacity if no quota)
   - Read/Write IOPS
   - Read/Write throughput (MiB/s)
+  - S3 access point count + drill-down (same as ONTAP)
 
 **Lustre Detail View:**
 
@@ -200,9 +204,13 @@ Press `Enter` on a file system to view its details.
 
 | Key | Action |
 |-----|--------|
-| `h` or `←` | Previous page (volumes/MDS servers) |
+| `j` or `↓` | Select next volume (ONTAP/OpenZFS) |
+| `k` or `↑` | Select previous volume (ONTAP/OpenZFS) |
+| `Enter` | Drill into selected volume's S3 access points |
+| `h` or `←` | Previous page (volumes / MDS servers / APs) |
 | `l` or `→` | Next page |
-| `q` | Return to summary view |
+| `Esc` | Return to volume list (when in access-point drill-down) |
+| `q` | Return to summary view (or exit access-point drill-down) |
 
 ## Configuration File
 

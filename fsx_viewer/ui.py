@@ -471,7 +471,7 @@ class UI:
             with Live(
                 self.render_full(),
                 console=self._console,
-                refresh_per_second=2,
+                refresh_per_second=4,
                 screen=_is_win,
                 vertical_overflow="visible",
             ) as live:
@@ -509,48 +509,84 @@ class UI:
                 old_settings = termios.tcgetattr(sys.stdin)
                 try:
                     tty.setcbreak(sys.stdin.fileno())
-                    
+                    import os as _os
+                    import time as _time
+                    stdin_fd = sys.stdin.fileno()
+                    buf = ''
+                    esc_started_at = None
+                    last_tick = 0.0
+                    ESC_TIMEOUT = 0.15
+                    RENDER_INTERVAL = 0.25
+
                     while self._running:
-                        # Update display
-                        live.update(self.render_full())
-                        
-                        # Check for keyboard input (non-blocking)
-                        if select.select([sys.stdin], [], [], 0.5)[0]:
-                            key = sys.stdin.read(1)
-                            
-                            # Handle escape sequences (arrow keys)
-                            if key == '\x1b':  # Escape character
-                                seq = sys.stdin.read(2)
-                                if seq == '[A':  # Up arrow
-                                    self.select_prev()
-                                elif seq == '[B':  # Down arrow
-                                    self.select_next()
-                                elif seq == '[D':  # Left arrow
-                                    self.prev_page()
-                                    self._selected_index = 0
-                                elif seq == '[C':  # Right arrow
-                                    self.next_page()
-                                    self._selected_index = 0
-                            # Handle single character keys
-                            elif key == 'q' or key == '\x03':  # q or Ctrl+C
+                        dirty = False
+
+                        # Drain available stdin bytes
+                        if select.select([stdin_fd], [], [], 0.03)[0]:
+                            try:
+                                chunk = _os.read(stdin_fd, 1024).decode('utf-8', errors='replace')
+                            except OSError:
+                                chunk = ''
+                            if chunk:
+                                buf += chunk
+
+                        # Parse keys out of buffer
+                        stop = False
+                        while buf:
+                            if buf[0] == '\x1b':
+                                if esc_started_at is None:
+                                    esc_started_at = _time.monotonic()
+                                # Complete CSI/SS3: ESC [ X  or  ESC O X
+                                if len(buf) >= 3 and buf[1] in ('[', 'O'):
+                                    third = buf[2]
+                                    buf = buf[3:]
+                                    esc_started_at = None
+                                    if third == 'A':    self.select_prev(); dirty = True
+                                    elif third == 'B':  self.select_next(); dirty = True
+                                    elif third == 'D':  self.prev_page(); self._selected_index = 0; dirty = True
+                                    elif third == 'C':  self.next_page(); self._selected_index = 0; dirty = True
+                                    continue
+                                # Have ESC + '[' or 'O' but no third byte: wait briefly
+                                if len(buf) == 2 and buf[1] in ('[', 'O'):
+                                    if select.select([stdin_fd], [], [], 0.05)[0]:
+                                        try:
+                                            more = _os.read(stdin_fd, 16).decode('utf-8', errors='replace')
+                                        except OSError:
+                                            more = ''
+                                        if more:
+                                            buf += more
+                                            continue
+                                # Bare ESC or unknown sequence; flush on timeout
+                                if _time.monotonic() - esc_started_at >= ESC_TIMEOUT:
+                                    buf = buf[1:]
+                                    esc_started_at = None
+                                    # No specific bare-ESC action in summary view
+                                    continue
+                                break  # wait for more bytes
+                            ch = buf[0]
+                            buf = buf[1:]
+                            if ch == 'q' or ch == '\x03':
                                 self._running = False
+                                stop = True
                                 break
-                            elif key == 'j':  # j for select next (vim down)
-                                self.select_next()
-                            elif key == 'k':  # k for select previous (vim up)
-                                self.select_prev()
-                            elif key == '\r' or key == '\n':  # Enter to view details
+                            elif ch == 'j':  self.select_next(); dirty = True
+                            elif ch == 'k':  self.select_prev(); dirty = True
+                            elif ch == 'l':  self.next_page(); self._selected_index = 0; dirty = True
+                            elif ch == 'h':  self.prev_page(); self._selected_index = 0; dirty = True
+                            elif ch in ('\r', '\n'):
                                 selected = self._get_current_selection()
                                 if selected:
                                     self._selected_fs_id = selected.id
                                     self._running = False
+                                    stop = True
                                     break
-                            elif key == 'l':  # l for next page
-                                self.next_page()
-                                self._selected_index = 0
-                            elif key == 'h':  # h for previous page
-                                self.prev_page()
-                                self._selected_index = 0
+                        if stop:
+                            break
+
+                        now = _time.monotonic()
+                        if dirty or (now - last_tick) >= RENDER_INTERVAL:
+                            live.update(self.render_full())
+                            last_tick = now
                 finally:
                     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
         except Exception:
@@ -590,6 +626,9 @@ class DetailUI:
         self._sort_key, self._sort_reverse = make_volume_sorter(sort)
         self._name_filter = name_filter
         self._region = region
+        self._selected_index = 0      # index into current page of volumes
+        self._selected_volume_id: Optional[str] = None
+        self._volume_detail_mode = False  # True when drilled into volume AP view
     
     def _get_page_count(self, total_items: int) -> int:
         """Calculate total number of pages."""
@@ -610,15 +649,23 @@ class DetailUI:
         fs = self._store.get_file_system()
         if fs is None:
             return
-        
+
+        # In volume-detail mode, paginate the selected volume's access points
+        if self._volume_detail_mode:
+            vol = None
+            for v in self._store.get_volumes():
+                if v.id == self._selected_volume_id:
+                    vol = v
+                    break
+            total_items = len(vol.access_points) if vol else 0
         # Get total items based on file system type (use filtered count for volumes)
-        if fs.type in (FileSystemType.ONTAP, FileSystemType.OPENZFS):
+        elif fs.type in (FileSystemType.ONTAP, FileSystemType.OPENZFS):
             total_items = len(self._get_sorted_volumes())
         elif fs.type == FileSystemType.LUSTRE:
             total_items = len(self._store.get_mds_servers())
         else:
             return  # Windows has no sub-resources to paginate
-        
+
         total_pages = self._get_page_count(total_items)
         if self._current_page < total_pages - 1:
             self._current_page += 1
@@ -638,6 +685,86 @@ class DetailUI:
             volumes = [v for v in volumes if filter_lower in v.name.lower()]
         
         return sorted(volumes, key=self._sort_key, reverse=self._sort_reverse)
+
+    def _current_selected_volume(self) -> Optional[Volume]:
+        """Return the volume currently highlighted in the table, or None."""
+        volumes = self._get_sorted_volumes()
+        if not volumes:
+            return None
+        page = self._get_page_items(volumes)
+        if not page:
+            return None
+        idx = max(0, min(self._selected_index, len(page) - 1))
+        vol = page[idx]
+        self._selected_volume_id = vol.id
+        return vol
+
+    def select_next_volume(self) -> None:
+        volumes = self._get_sorted_volumes()
+        page = self._get_page_items(volumes)
+        if self._selected_index < len(page) - 1:
+            self._selected_index += 1
+        elif self._current_page < self._get_page_count(len(volumes)) - 1:
+            self._current_page += 1
+            self._selected_index = 0
+        self._current_selected_volume()
+
+    def select_prev_volume(self) -> None:
+        if self._selected_index > 0:
+            self._selected_index -= 1
+        elif self._current_page > 0:
+            self._current_page -= 1
+            self._selected_index = self._page_size - 1
+        self._current_selected_volume()
+
+    def enter_volume_detail(self) -> None:
+        """Drill into the selected volume's access-point detail view."""
+        if self._current_selected_volume() is not None:
+            self._volume_detail_mode = True
+            self._current_page = 0  # reuse pagination for AP list
+
+    def exit_volume_detail(self) -> None:
+        self._volume_detail_mode = False
+        self._current_page = 0
+
+    def _render_volume_detail(self) -> Panel:
+        """Render the drilled-down volume view showing S3 access points."""
+        fs = self._store.get_file_system()
+        vol = None
+        for v in self._store.get_volumes():
+            if v.id == self._selected_volume_id:
+                vol = v
+                break
+
+        if vol is None or fs is None:
+            return Panel(Text("Volume not found", style="red"), title="Volume Detail")
+
+        header = Text()
+        header.append(f"Volume {vol.id}", style="bold cyan")
+        header.append(f"  {vol.name}\n", style="bold")
+        header.append(f"Type: {vol.type}   ")
+        header.append(f"Capacity: {vol.used_capacity}/{vol.storage_capacity} GiB\n")
+
+        # AP table
+        table = Table(show_header=True, header_style="bold", border_style="dim", expand=True)
+        table.add_column("Name", style="cyan", no_wrap=True)
+        table.add_column("Alias")
+        table.add_column("Lifecycle", width=12)
+        table.add_column("VPC", width=24)
+
+        aps = vol.access_points
+        if not aps:
+            table.add_row("-", "no S3 access points", "", "")
+        else:
+            total_pages = self._get_page_count(len(aps))
+            page = self._get_page_items(aps)
+            for ap in page:
+                table.add_row(ap.name or "-", ap.alias or "-", ap.lifecycle or "-", ap.vpc_id or "Internet")
+            header.append(f"\nPage {self._current_page + 1}/{total_pages}  ({len(aps)} access point{'s' if len(aps) != 1 else ''})\n", style="dim")
+
+        help_text = Text("\n[h/l] page  [q/Esc] back to volume list", style="dim")
+
+        return Panel(Group(header, table, help_text), title=f"{fs.name} / {vol.id}", border_style="cyan")
     
     def _render_progress_bar(self, utilization: float, width: int = 12, gradient: bool = False) -> Text:
         """Render a progress bar for utilization.
@@ -741,6 +868,12 @@ class DetailUI:
         help_text.append("h/l", style="bold white")
         help_text.append(": page", style="dim")
         help_text.append(" • ", style="dim")
+        help_text.append("j/k", style="bold white")
+        help_text.append(": select volume", style="dim")
+        help_text.append(" • ", style="dim")
+        help_text.append("Enter", style="bold white")
+        help_text.append(": S3 APs", style="dim")
+        help_text.append(" • ", style="dim")
         help_text.append("q", style="bold white")
         help_text.append(": quit", style="dim")
         help_text.append(" (arrow keys also supported)", style="dim italic")
@@ -755,7 +888,11 @@ class DetailUI:
                 title="FSx Detail View",
                 border_style="blue",
             )
-        
+
+        # Drill-down: volume access-point detail view
+        if self._volume_detail_mode:
+            return self._render_volume_detail()
+
         if fs.type == FileSystemType.ONTAP:
             return self._render_ontap_detail(fs)
         elif fs.type == FileSystemType.OPENZFS:
@@ -786,11 +923,12 @@ class DetailUI:
         table.add_column("Capacity (GiB)", width=48)  # 30 bar + text
         table.add_column("IOPS (r/w)", width=12, justify="right")
         table.add_column("MiB/s (r/w)", width=14, justify="right")
-        
+        table.add_column("S3", width=4, justify="right")
+
         if not volumes:
             return table
-        
-        for vol in volumes:
+
+        for idx, vol in enumerate(volumes):
             # Capacity with progress bar (smooth gradient, width=30)
             used = vol.used_capacity
             capacity = vol.storage_capacity
@@ -824,12 +962,21 @@ class DetailUI:
             else:
                 throughput_str = "-"
             
+            # S3 AP count (highlight selected row's ID)
+            ap_count = len(vol.access_points)
+            ap_str = str(ap_count) if ap_count > 0 else "-"
+
+            vol_id_text = vol.id
+            if self._selected_volume_id == vol.id:
+                vol_id_text = Text(vol.id, style="reverse cyan")
+
             table.add_row(
-                vol.id,
+                vol_id_text,
                 vol.name,
                 capacity_text,
                 iops_str,
                 throughput_str,
+                ap_str,
             )
         
         return table
@@ -1025,7 +1172,7 @@ class DetailUI:
             with Live(
                 self.render(),
                 console=self._console,
-                refresh_per_second=2,
+                refresh_per_second=4,
                 screen=_is_win,
                 vertical_overflow="visible",
             ) as live:
@@ -1054,30 +1201,111 @@ class DetailUI:
                 old_settings = termios.tcgetattr(sys.stdin)
                 try:
                     tty.setcbreak(sys.stdin.fileno())
-                    
+                    import os as _os
+                    stdin_fd = sys.stdin.fileno()
+                    buf = ''          # accumulator for partial escape sequences
+                    esc_started_at = None  # timestamp when '\x1b' was first seen
+                    import time as _time
+
+                    def handle_key(k: str) -> bool:
+                        """Dispatch a single logical key. Returns True if running should stop."""
+                        if k in ('LEFT',):
+                            self.prev_page()
+                        elif k in ('RIGHT',):
+                            self.next_page()
+                        elif k in ('UP',):
+                            self.select_prev_volume()
+                        elif k in ('DOWN',):
+                            self.select_next_volume()
+                        elif k == 'ESC':
+                            if self._volume_detail_mode:
+                                self.exit_volume_detail()
+                        elif k == 'q' or k == '\x03':
+                            if self._volume_detail_mode:
+                                self.exit_volume_detail()
+                            else:
+                                return True
+                        elif k == 'l':
+                            self.next_page()
+                        elif k == 'h':
+                            self.prev_page()
+                        elif k == 'j':
+                            self.select_next_volume()
+                        elif k == 'k':
+                            self.select_prev_volume()
+                        elif k in ('\r', '\n'):
+                            if not self._volume_detail_mode:
+                                self.enter_volume_detail()
+                        return False
+
+                    ESC_TIMEOUT = 0.15  # seconds to wait for more bytes after bare ESC
+
+                    # Prime the display
+                    live.update(self.render())
+                    last_tick = _time.monotonic()
+
                     while self._running:
-                        # Update display
-                        live.update(self.render())
-                        
-                        # Check for keyboard input (non-blocking)
-                        if select.select([sys.stdin], [], [], 0.5)[0]:
-                            key = sys.stdin.read(1)
-                            
-                            # Handle escape sequences (arrow keys)
-                            if key == '\x1b':  # Escape character
-                                seq = sys.stdin.read(2)
-                                if seq == '[D':  # Left arrow
-                                    self.prev_page()
-                                elif seq == '[C':  # Right arrow
-                                    self.next_page()
-                            # Handle single character keys
-                            elif key == 'q' or key == '\x03':  # q or Ctrl+C
-                                self._running = False
+                        dirty = False
+                        # Drain all currently-available stdin bytes at once
+                        if select.select([stdin_fd], [], [], 0.03)[0]:
+                            try:
+                                chunk = _os.read(stdin_fd, 1024).decode('utf-8', errors='replace')
+                            except OSError:
+                                chunk = ''
+                            buf += chunk
+
+                        # Parse complete keys out of buffer
+                        while buf:
+                            if buf[0] == '\x1b':
+                                if esc_started_at is None:
+                                    esc_started_at = _time.monotonic()
+                                # Complete CSI: ESC [ X  or  SS3: ESC O X
+                                if len(buf) >= 3 and buf[1] in ('[', 'O'):
+                                    third = buf[2]
+                                    key_map = {'A': 'UP', 'B': 'DOWN', 'C': 'RIGHT', 'D': 'LEFT'}
+                                    key = key_map.get(third, None)
+                                    buf = buf[3:]
+                                    esc_started_at = None
+                                    if key is not None:
+                                        if handle_key(key):
+                                            self._running = False
+                                            break
+                                        dirty = True
+                                    continue
+                                # Have ESC + '[' or 'O' but no third byte yet:
+                                # the final byte is imminent. Wait up to 50ms for it
+                                # (non-blocking poll). Avoids splitting sequences.
+                                if len(buf) == 2 and buf[1] in ('[', 'O'):
+                                    if select.select([stdin_fd], [], [], 0.05)[0]:
+                                        try:
+                                            more = _os.read(stdin_fd, 16).decode('utf-8', errors='replace')
+                                        except OSError:
+                                            more = ''
+                                        if more:
+                                            buf += more
+                                            continue
+                                # Might still be partial (bare ESC or ESC+other); flush on timeout
+                                if _time.monotonic() - esc_started_at >= ESC_TIMEOUT:
+                                    buf = buf[1:]
+                                    esc_started_at = None
+                                    if handle_key('ESC'):
+                                        self._running = False
+                                        break
+                                    dirty = True
+                                    continue
+                                # Partial ESC sequence; wait for more bytes
                                 break
-                            elif key == 'l':  # l for next page
-                                self.next_page()
-                            elif key == 'h':  # h for previous page
-                                self.prev_page()
+                            else:
+                                ch = buf[0]
+                                buf = buf[1:]
+                                if handle_key(ch):
+                                    self._running = False
+                                    break
+                                dirty = True
+
+                        if dirty or (_time.monotonic() - last_tick) >= 0.25:
+                            live.update(self.render())
+                            last_tick = _time.monotonic()
                 finally:
                     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
         except Exception:

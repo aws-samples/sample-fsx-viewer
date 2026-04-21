@@ -140,6 +140,15 @@ class Stats:
 
 
 @dataclass
+class AccessPoint:
+    """S3 access point attached to an FSx volume."""
+    name: str
+    alias: str = ""
+    lifecycle: str = ""           # e.g., AVAILABLE, CREATING, FAILED
+    vpc_id: Optional[str] = None  # present when VPC-scoped
+
+
+@dataclass
 class Volume:
     """ONTAP or OpenZFS volume with metrics."""
     id: str                    # vol-xxx
@@ -152,6 +161,7 @@ class Volume:
     write_iops: float = 0.0
     read_throughput: float = 0.0   # MiB/s
     write_throughput: float = 0.0  # MiB/s
+    access_points: List[AccessPoint] = field(default_factory=list)
     
     def utilization(self) -> float:
         """Return storage utilization as 0.0-1.0."""

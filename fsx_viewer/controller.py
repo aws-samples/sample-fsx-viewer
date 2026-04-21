@@ -442,7 +442,14 @@ class DetailController:
         
         try:
             volumes = self._fsx_client.describe_volumes(self._file_system_id)
+            # Fetch S3 access points once for the whole FS (graceful degradation)
+            aps_by_vol = {}
+            try:
+                aps_by_vol = self._fsx_client.describe_s3_access_points(self._file_system_id)
+            except Exception as e:
+                logger.warning(f"Failed to describe S3 access points: {e}")
             for vol in volumes:
+                vol.access_points = aps_by_vol.get(vol.id, [])
                 self._store.add_volume(vol)
         except Exception as e:
             logger.warning(f"Failed to refresh volumes: {e}")

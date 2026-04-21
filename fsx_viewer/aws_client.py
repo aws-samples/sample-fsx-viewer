@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Tuple
 
-from .model import FileSystem, FileSystemType, Metrics, Volume, MetadataServer, PricingBreakdown
+from .model import FileSystem, FileSystemType, Metrics, Volume, MetadataServer, PricingBreakdown, AccessPoint
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +212,43 @@ class FSxClient:
             return 0
         
         return 0
+
+
+    def describe_s3_access_points(self, file_system_id: str) -> Dict[str, List[AccessPoint]]:
+        """List S3 access points for all volumes of a file system.
+
+        Returns a mapping of volume_id -> list of AccessPoint. Volumes with no
+        attachments are simply absent from the mapping.
+
+        Raises the underlying boto3 exception on failure (caller decides to
+        log/degrade). Returns {} if the FSx API does not support this operation
+        in the installed boto3 (shouldn't happen post-June-2025 models).
+        """
+        result: Dict[str, List[AccessPoint]] = {}
+        if not hasattr(self._client, 'describe_s3_access_point_attachments'):
+            return result
+
+        paginator = self._client.get_paginator('describe_s3_access_point_attachments')
+        pages = paginator.paginate(
+            Filters=[{'Name': 'file-system-id', 'Values': [file_system_id]}]
+        )
+        for page in pages:
+            for att in page.get('S3AccessPointAttachments', []):
+                ap_info = att.get('S3AccessPoint', {})
+                vol_id = (
+                    att.get('OntapConfiguration', {}).get('VolumeId')
+                    or att.get('OpenZFSConfiguration', {}).get('VolumeId')
+                )
+                if not vol_id:
+                    continue
+                ap = AccessPoint(
+                    name=att.get('Name', ''),
+                    alias=ap_info.get('Alias', ''),
+                    lifecycle=att.get('Lifecycle', ''),
+                    vpc_id=(ap_info.get('VpcConfiguration') or {}).get('VpcId'),
+                )
+                result.setdefault(vol_id, []).append(ap)
+        return result
 
 
 class CloudWatchClient:

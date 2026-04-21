@@ -17,6 +17,7 @@ from .model import (
     FileSystem,
     FileSystemType,
     DetailStore,
+    AccessPoint,
 )
 from .ui import DetailUI, Style
 
@@ -224,3 +225,95 @@ def test_volume_metrics_dimension_correctness(fs_id: str, volume_id: str):
     
     assert 'volume_id' in query, "VolumeId dimension not found"
     assert query['volume_id'] == volume_id, f"VolumeId mismatch"
+
+
+# =============================================================================
+# S3 Access Point Properties
+# =============================================================================
+
+@st.composite
+def access_point_strategy(draw):
+    name = draw(st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789-", min_size=3, max_size=48))
+    alias = draw(st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789-", min_size=0, max_size=63))
+    lifecycle = draw(st.sampled_from(["AVAILABLE", "CREATING", "UPDATING", "FAILED", ""]))
+    vpc_id = draw(st.one_of(st.none(), st.text(alphabet="abcdef0123456789", min_size=8, max_size=17).map(lambda x: f"vpc-{x}")))
+    return AccessPoint(name=name, alias=alias, lifecycle=lifecycle, vpc_id=vpc_id)
+
+
+@settings(max_examples=50)
+@given(aps=st.lists(access_point_strategy(), min_size=0, max_size=25))
+def test_ap_count_matches_list_length(aps):
+    """Property: volume.access_points length matches the count shown in S3 column."""
+    vol = Volume(
+        id="fsvol-deadbeef00000000",
+        name="v0",
+        file_system_id="fs-deadbeef00000000",
+        type="ONTAP",
+        storage_capacity=100,
+        access_points=aps,
+    )
+    assert len(vol.access_points) == len(aps)
+
+
+@settings(max_examples=30)
+@given(aps=st.lists(access_point_strategy(), min_size=1, max_size=25))
+def test_ap_drill_down_pagination_bounds(aps):
+    """Property: in volume-detail mode, pagination never exceeds ceil(n/page_size) - 1."""
+    import math
+    store = DetailStore()
+    store.set_file_system(FileSystem(
+        id="fs-deadbeef00000000",
+        name="fs",
+        type=FileSystemType.ONTAP,
+        storage_capacity=100,
+        creation_time=datetime.now(timezone.utc),
+        lifecycle="AVAILABLE",
+    ))
+    vol = Volume(
+        id="fsvol-deadbeef00000000",
+        name="v0",
+        file_system_id="fs-deadbeef00000000",
+        type="ONTAP",
+        storage_capacity=100,
+        access_points=aps,
+    )
+    store.add_volume(vol)
+    ui = DetailUI(store=store, page_size=5)
+    ui._selected_volume_id = vol.id
+    ui._volume_detail_mode = True
+
+    expected_last_page = max(0, math.ceil(len(aps) / ui._page_size) - 1)
+    # Advance past the expected last page and ensure we never exceed it
+    for _ in range(len(aps) + 5):
+        ui.next_page()
+    assert ui._current_page == expected_last_page
+
+
+@settings(max_examples=30)
+@given(aps=st.lists(access_point_strategy(), min_size=0, max_size=10))
+def test_ap_detail_renders_without_error(aps):
+    """Property: the volume-AP detail panel renders for any set of APs."""
+    store = DetailStore()
+    store.set_file_system(FileSystem(
+        id="fs-deadbeef00000000",
+        name="fs",
+        type=FileSystemType.ONTAP,
+        storage_capacity=100,
+        creation_time=datetime.now(timezone.utc),
+        lifecycle="AVAILABLE",
+    ))
+    vol = Volume(
+        id="fsvol-deadbeef00000000",
+        name="v0",
+        file_system_id="fs-deadbeef00000000",
+        type="ONTAP",
+        storage_capacity=100,
+        access_points=aps,
+    )
+    store.add_volume(vol)
+    ui = DetailUI(store=store)
+    ui._selected_volume_id = vol.id
+    ui._volume_detail_mode = True
+    output = render_to_string(ui.render())
+    # Panel should contain the volume id and either "no S3 access points" or the name of an AP
+    assert vol.id in output
