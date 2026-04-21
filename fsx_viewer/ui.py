@@ -504,94 +504,88 @@ class UI:
                     import select
                     import termios
                     import tty
-                
-                old_settings = termios.tcgetattr(sys.stdin)
-                try:
-                    tty.setcbreak(sys.stdin.fileno())
-                    import os as _os
-                    import time as _time
-                    stdin_fd = sys.stdin.fileno()
-                    buf = ''
-                    esc_started_at = None
-                    last_tick = 0.0
-                    ESC_TIMEOUT = 0.15
-                    RENDER_INTERVAL = 0.25
 
-                    # Prime the display
-                    live.update(self.render_full(), refresh=True)
-                    last_tick = _time.monotonic()
+                    old_settings = termios.tcgetattr(sys.stdin)
+                    try:
+                        tty.setcbreak(sys.stdin.fileno())
+                        import os as _os
+                        import time as _time
+                        stdin_fd = sys.stdin.fileno()
+                        buf = ''
+                        esc_started_at = None
+                        last_tick = 0.0
+                        ESC_TIMEOUT = 0.15
+                        RENDER_INTERVAL = 0.25
 
-                    while self._running:
-                        dirty = False
+                        # Prime the display
+                        live.update(self.render_full(), refresh=True)
+                        last_tick = _time.monotonic()
 
-                        # Drain available stdin bytes
-                        if select.select([stdin_fd], [], [], 0.03)[0]:
-                            try:
-                                chunk = _os.read(stdin_fd, 1024).decode('utf-8', errors='replace')
-                            except OSError:
-                                chunk = ''
-                            if chunk:
-                                buf += chunk
+                        while self._running:
+                            dirty = False
 
-                        # Parse keys out of buffer
-                        stop = False
-                        while buf:
-                            if buf[0] == '\x1b':
-                                if esc_started_at is None:
-                                    esc_started_at = _time.monotonic()
-                                # Complete CSI/SS3: ESC [ X  or  ESC O X
-                                if len(buf) >= 3 and buf[1] in ('[', 'O'):
-                                    third = buf[2]
-                                    buf = buf[3:]
-                                    esc_started_at = None
-                                    if third == 'A':    self.select_prev(); dirty = True
-                                    elif third == 'B':  self.select_next(); dirty = True
-                                    elif third == 'D':  self.prev_page(); self._selected_index = 0; dirty = True
-                                    elif third == 'C':  self.next_page(); self._selected_index = 0; dirty = True
-                                    continue
-                                # Have ESC + '[' or 'O' but no third byte: wait briefly
-                                if len(buf) == 2 and buf[1] in ('[', 'O'):
-                                    if select.select([stdin_fd], [], [], 0.05)[0]:
-                                        try:
-                                            more = _os.read(stdin_fd, 16).decode('utf-8', errors='replace')
-                                        except OSError:
-                                            more = ''
-                                        if more:
-                                            buf += more
-                                            continue
-                                # Bare ESC or unknown sequence; flush on timeout
-                                if _time.monotonic() - esc_started_at >= ESC_TIMEOUT:
-                                    buf = buf[1:]
-                                    esc_started_at = None
-                                    # No specific bare-ESC action in summary view
-                                    continue
-                                break  # wait for more bytes
-                            ch = buf[0]
-                            buf = buf[1:]
-                            if ch == 'q' or ch == '\x03':
-                                self._running = False
-                                stop = True
-                                break
-                            elif ch == 'j':  self.select_next(); dirty = True
-                            elif ch == 'k':  self.select_prev(); dirty = True
-                            elif ch == 'l':  self.next_page(); self._selected_index = 0; dirty = True
-                            elif ch == 'h':  self.prev_page(); self._selected_index = 0; dirty = True
-                            elif ch in ('\r', '\n'):
-                                selected = self._get_current_selection()
-                                if selected:
-                                    self._selected_fs_id = selected.id
+                            if select.select([stdin_fd], [], [], 0.03)[0]:
+                                try:
+                                    chunk = _os.read(stdin_fd, 1024).decode('utf-8', errors='replace')
+                                except OSError:
+                                    chunk = ''
+                                if chunk:
+                                    buf += chunk
+
+                            stop = False
+                            while buf:
+                                if buf[0] == '\x1b':
+                                    if esc_started_at is None:
+                                        esc_started_at = _time.monotonic()
+                                    if len(buf) >= 3 and buf[1] in ('[', 'O'):
+                                        third = buf[2]
+                                        buf = buf[3:]
+                                        esc_started_at = None
+                                        if third == 'A':    self.select_prev(); dirty = True
+                                        elif third == 'B':  self.select_next(); dirty = True
+                                        elif third == 'D':  self.prev_page(); self._selected_index = 0; dirty = True
+                                        elif third == 'C':  self.next_page(); self._selected_index = 0; dirty = True
+                                        continue
+                                    if len(buf) == 2 and buf[1] in ('[', 'O'):
+                                        if select.select([stdin_fd], [], [], 0.05)[0]:
+                                            try:
+                                                more = _os.read(stdin_fd, 16).decode('utf-8', errors='replace')
+                                            except OSError:
+                                                more = ''
+                                            if more:
+                                                buf += more
+                                                continue
+                                    if _time.monotonic() - esc_started_at >= ESC_TIMEOUT:
+                                        buf = buf[1:]
+                                        esc_started_at = None
+                                        continue
+                                    break
+                                ch = buf[0]
+                                buf = buf[1:]
+                                if ch == 'q' or ch == '\x03':
                                     self._running = False
                                     stop = True
                                     break
-                        if stop:
-                            break
+                                elif ch == 'j':  self.select_next(); dirty = True
+                                elif ch == 'k':  self.select_prev(); dirty = True
+                                elif ch == 'l':  self.next_page(); self._selected_index = 0; dirty = True
+                                elif ch == 'h':  self.prev_page(); self._selected_index = 0; dirty = True
+                                elif ch in ('\r', '\n'):
+                                    selected = self._get_current_selection()
+                                    if selected:
+                                        self._selected_fs_id = selected.id
+                                        self._running = False
+                                        stop = True
+                                        break
+                            if stop:
+                                break
 
-                        now = _time.monotonic()
-                        if dirty or (now - last_tick) >= RENDER_INTERVAL:
-                            live.update(self.render_full(), refresh=True)
-                            last_tick = now
-                finally:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                            now = _time.monotonic()
+                            if dirty or (now - last_tick) >= RENDER_INTERVAL:
+                                live.update(self.render_full(), refresh=True)
+                                last_tick = now
+                    finally:
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
         except Exception:
             # Fallback for non-TTY environments
             self._console.print(self.render_full())
@@ -1194,117 +1188,108 @@ class DetailUI:
                     import select
                     import termios
                     import tty
-                
-                old_settings = termios.tcgetattr(sys.stdin)
-                try:
-                    tty.setcbreak(sys.stdin.fileno())
-                    import os as _os
-                    stdin_fd = sys.stdin.fileno()
-                    buf = ''          # accumulator for partial escape sequences
-                    esc_started_at = None  # timestamp when '\x1b' was first seen
-                    import time as _time
 
-                    def handle_key(k: str) -> bool:
-                        """Dispatch a single logical key. Returns True if running should stop."""
-                        if k in ('LEFT',):
-                            self.prev_page()
-                        elif k in ('RIGHT',):
-                            self.next_page()
-                        elif k in ('UP',):
-                            self.select_prev_volume()
-                        elif k in ('DOWN',):
-                            self.select_next_volume()
-                        elif k == 'ESC':
-                            if self._volume_detail_mode:
-                                self.exit_volume_detail()
-                        elif k == 'q' or k == '\x03':
-                            if self._volume_detail_mode:
-                                self.exit_volume_detail()
-                            else:
-                                return True
-                        elif k == 'l':
-                            self.next_page()
-                        elif k == 'h':
-                            self.prev_page()
-                        elif k == 'j':
-                            self.select_next_volume()
-                        elif k == 'k':
-                            self.select_prev_volume()
-                        elif k in ('\r', '\n'):
-                            if not self._volume_detail_mode:
-                                self.enter_volume_detail()
-                        return False
+                    old_settings = termios.tcgetattr(sys.stdin)
+                    try:
+                        tty.setcbreak(sys.stdin.fileno())
+                        import os as _os
+                        import time as _time
+                        stdin_fd = sys.stdin.fileno()
+                        buf = ''
+                        esc_started_at = None
 
-                    ESC_TIMEOUT = 0.15  # seconds to wait for more bytes after bare ESC
+                        def handle_key(k: str) -> bool:
+                            if k in ('LEFT',):
+                                self.prev_page()
+                            elif k in ('RIGHT',):
+                                self.next_page()
+                            elif k in ('UP',):
+                                self.select_prev_volume()
+                            elif k in ('DOWN',):
+                                self.select_next_volume()
+                            elif k == 'ESC':
+                                if self._volume_detail_mode:
+                                    self.exit_volume_detail()
+                            elif k == 'q' or k == '\x03':
+                                if self._volume_detail_mode:
+                                    self.exit_volume_detail()
+                                else:
+                                    return True
+                            elif k == 'l':
+                                self.next_page()
+                            elif k == 'h':
+                                self.prev_page()
+                            elif k == 'j':
+                                self.select_next_volume()
+                            elif k == 'k':
+                                self.select_prev_volume()
+                            elif k in ('\r', '\n'):
+                                if not self._volume_detail_mode:
+                                    self.enter_volume_detail()
+                            return False
 
-                    # Prime the display
-                    live.update(self.render(), refresh=True)
-                    last_tick = _time.monotonic()
+                        ESC_TIMEOUT = 0.15
 
-                    while self._running:
-                        dirty = False
-                        # Drain all currently-available stdin bytes at once
-                        if select.select([stdin_fd], [], [], 0.03)[0]:
-                            try:
-                                chunk = _os.read(stdin_fd, 1024).decode('utf-8', errors='replace')
-                            except OSError:
-                                chunk = ''
-                            buf += chunk
+                        # Prime the display
+                        live.update(self.render(), refresh=True)
+                        last_tick = _time.monotonic()
 
-                        # Parse complete keys out of buffer
-                        while buf:
-                            if buf[0] == '\x1b':
-                                if esc_started_at is None:
-                                    esc_started_at = _time.monotonic()
-                                # Complete CSI: ESC [ X  or  SS3: ESC O X
-                                if len(buf) >= 3 and buf[1] in ('[', 'O'):
-                                    third = buf[2]
-                                    key_map = {'A': 'UP', 'B': 'DOWN', 'C': 'RIGHT', 'D': 'LEFT'}
-                                    key = key_map.get(third, None)
-                                    buf = buf[3:]
-                                    esc_started_at = None
-                                    if key is not None:
-                                        if handle_key(key):
+                        while self._running:
+                            dirty = False
+                            if select.select([stdin_fd], [], [], 0.03)[0]:
+                                try:
+                                    chunk = _os.read(stdin_fd, 1024).decode('utf-8', errors='replace')
+                                except OSError:
+                                    chunk = ''
+                                buf += chunk
+
+                            while buf:
+                                if buf[0] == '\x1b':
+                                    if esc_started_at is None:
+                                        esc_started_at = _time.monotonic()
+                                    if len(buf) >= 3 and buf[1] in ('[', 'O'):
+                                        third = buf[2]
+                                        key_map = {'A': 'UP', 'B': 'DOWN', 'C': 'RIGHT', 'D': 'LEFT'}
+                                        key = key_map.get(third, None)
+                                        buf = buf[3:]
+                                        esc_started_at = None
+                                        if key is not None:
+                                            if handle_key(key):
+                                                self._running = False
+                                                break
+                                            dirty = True
+                                        continue
+                                    if len(buf) == 2 and buf[1] in ('[', 'O'):
+                                        if select.select([stdin_fd], [], [], 0.05)[0]:
+                                            try:
+                                                more = _os.read(stdin_fd, 16).decode('utf-8', errors='replace')
+                                            except OSError:
+                                                more = ''
+                                            if more:
+                                                buf += more
+                                                continue
+                                    if _time.monotonic() - esc_started_at >= ESC_TIMEOUT:
+                                        buf = buf[1:]
+                                        esc_started_at = None
+                                        if handle_key('ESC'):
                                             self._running = False
                                             break
                                         dirty = True
-                                    continue
-                                # Have ESC + '[' or 'O' but no third byte yet:
-                                # the final byte is imminent. Wait up to 50ms for it
-                                # (non-blocking poll). Avoids splitting sequences.
-                                if len(buf) == 2 and buf[1] in ('[', 'O'):
-                                    if select.select([stdin_fd], [], [], 0.05)[0]:
-                                        try:
-                                            more = _os.read(stdin_fd, 16).decode('utf-8', errors='replace')
-                                        except OSError:
-                                            more = ''
-                                        if more:
-                                            buf += more
-                                            continue
-                                # Might still be partial (bare ESC or ESC+other); flush on timeout
-                                if _time.monotonic() - esc_started_at >= ESC_TIMEOUT:
+                                        continue
+                                    break
+                                else:
+                                    ch = buf[0]
                                     buf = buf[1:]
-                                    esc_started_at = None
-                                    if handle_key('ESC'):
+                                    if handle_key(ch):
                                         self._running = False
                                         break
                                     dirty = True
-                                    continue
-                                # Partial ESC sequence; wait for more bytes
-                                break
-                            else:
-                                ch = buf[0]
-                                buf = buf[1:]
-                                if handle_key(ch):
-                                    self._running = False
-                                    break
-                                dirty = True
 
-                        if dirty or (_time.monotonic() - last_tick) >= 0.25:
-                            live.update(self.render(), refresh=True)
-                            last_tick = _time.monotonic()
-                finally:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                            if dirty or (_time.monotonic() - last_tick) >= 0.25:
+                                live.update(self.render(), refresh=True)
+                                last_tick = _time.monotonic()
+                    finally:
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
         except Exception:
             # Fallback for non-TTY environments
             self._console.print(self.render())
