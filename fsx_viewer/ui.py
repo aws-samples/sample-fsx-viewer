@@ -181,7 +181,7 @@ class UI:
         self._page_size = page_size
         self._current_page = 0
         self._selected_index = 0  # Index within current page
-        self._console = Console(force_terminal=True, legacy_windows=False)
+        self._console = Console()
         self._running = False
         self._sort_key, self._sort_reverse = make_sorter(sort)
         self._selected_fs_id: Optional[str] = None  # Set when user presses Enter
@@ -477,29 +477,37 @@ class UI:
                 # Set up keyboard handling in a separate thread
                 if sys.platform == 'win32':
                     import msvcrt
+                    import time as _wtime
+                    # Prime the display
+                    live.update(self.render_full(), refresh=True)
+                    last_render = _wtime.monotonic()
                     while self._running:
-                        live.update(self.render_full())
+                        dirty = False
                         if msvcrt.kbhit():
                             key = msvcrt.getwch()
                             if key == '\xe0' or key == '\x00':  # Special key prefix
                                 key2 = msvcrt.getwch()
-                                if key2 == 'H':    self.select_prev()   # Up
-                                elif key2 == 'P':  self.select_next()   # Down
-                                elif key2 == 'K':  self.prev_page(); self._selected_index = 0  # Left
-                                elif key2 == 'M':  self.next_page(); self._selected_index = 0  # Right
+                                if key2 == 'H':    self.select_prev(); dirty = True
+                                elif key2 == 'P':  self.select_next(); dirty = True
+                                elif key2 == 'K':  self.prev_page(); self._selected_index = 0; dirty = True
+                                elif key2 == 'M':  self.next_page(); self._selected_index = 0; dirty = True
                             elif key == 'q' or key == '\x03':
                                 self._running = False; break
-                            elif key == 'j':  self.select_next()
-                            elif key == 'k':  self.select_prev()
+                            elif key == 'j':  self.select_next(); dirty = True
+                            elif key == 'k':  self.select_prev(); dirty = True
                             elif key == '\r':
                                 selected = self._get_current_selection()
                                 if selected:
                                     self._selected_fs_id = selected.id
                                     self._running = False; break
-                            elif key == 'l':  self.next_page(); self._selected_index = 0
-                            elif key == 'h':  self.prev_page(); self._selected_index = 0
+                            elif key == 'l':  self.next_page(); self._selected_index = 0; dirty = True
+                            elif key == 'h':  self.prev_page(); self._selected_index = 0; dirty = True
                         else:
-                            import time; time.sleep(0.1)
+                            _wtime.sleep(0.05)
+                        now = _wtime.monotonic()
+                        if dirty or (now - last_render) >= 0.25:
+                            live.update(self.render_full(), refresh=True)
+                            last_render = now
                 else:
                     import select
                     import termios
@@ -613,7 +621,7 @@ class DetailUI:
         self._disable_pricing = disable_pricing
         self._page_size = page_size
         self._current_page = 0
-        self._console = Console(force_terminal=True, legacy_windows=False)
+        self._console = Console()
         self._running = False
         self._sort_key, self._sort_reverse = make_volume_sorter(sort)
         self._name_filter = name_filter
@@ -1170,20 +1178,41 @@ class DetailUI:
                 # Set up keyboard handling in a separate thread
                 if sys.platform == 'win32':
                     import msvcrt
+                    import time as _wtime
+                    # Prime the display
+                    live.update(self.render(), refresh=True)
+                    last_render = _wtime.monotonic()
                     while self._running:
-                        live.update(self.render())
+                        dirty = False
                         if msvcrt.kbhit():
                             key = msvcrt.getwch()
-                            if key == '\xe0' or key == '\x00':
+                            if key == '\xe0' or key == '\x00':  # Special key prefix
                                 key2 = msvcrt.getwch()
-                                if key2 == 'K':    self.prev_page()   # Left
-                                elif key2 == 'M':  self.next_page()   # Right
+                                if key2 == 'H':    self.select_prev_volume(); dirty = True  # Up
+                                elif key2 == 'P':  self.select_next_volume(); dirty = True  # Down
+                                elif key2 == 'K':  self.prev_page(); dirty = True           # Left
+                                elif key2 == 'M':  self.next_page(); dirty = True           # Right
                             elif key == 'q' or key == '\x03':
-                                self._running = False; break
-                            elif key == 'l':  self.next_page()
-                            elif key == 'h':  self.prev_page()
+                                if self._volume_detail_mode:
+                                    self.exit_volume_detail(); dirty = True
+                                else:
+                                    self._running = False; break
+                            elif key == '\x1b':  # Esc
+                                if self._volume_detail_mode:
+                                    self.exit_volume_detail(); dirty = True
+                            elif key == 'l':  self.next_page(); dirty = True
+                            elif key == 'h':  self.prev_page(); dirty = True
+                            elif key == 'j':  self.select_next_volume(); dirty = True
+                            elif key == 'k':  self.select_prev_volume(); dirty = True
+                            elif key == '\r':
+                                if not self._volume_detail_mode:
+                                    self.enter_volume_detail(); dirty = True
                         else:
-                            import time; time.sleep(0.1)
+                            _wtime.sleep(0.05)
+                        now = _wtime.monotonic()
+                        if dirty or (now - last_render) >= 0.25:
+                            live.update(self.render(), refresh=True)
+                            last_render = now
                 else:
                     import select
                     import termios
