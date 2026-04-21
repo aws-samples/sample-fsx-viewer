@@ -181,7 +181,7 @@ class UI:
         self._page_size = page_size
         self._current_page = 0
         self._selected_index = 0  # Index within current page
-        self._console = Console()
+        self._console = Console(force_terminal=True, legacy_windows=False)
         self._running = False
         self._sort_key, self._sort_reverse = make_sorter(sort)
         self._selected_fs_id: Optional[str] = None  # Set when user presses Enter
@@ -619,7 +619,7 @@ class DetailUI:
         self._disable_pricing = disable_pricing
         self._page_size = page_size
         self._current_page = 0
-        self._console = Console()
+        self._console = Console(force_terminal=True, legacy_windows=False)
         self._running = False
         self._sort_key, self._sort_reverse = make_volume_sorter(sort)
         self._name_filter = name_filter
