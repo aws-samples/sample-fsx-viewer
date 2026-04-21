@@ -96,14 +96,12 @@ def main():
 
 
 def _enter_alt_screen() -> bool:
-    """Enter the terminal's alternate screen buffer. Returns True if we did.
+    """Enter the terminal's alternate screen buffer.
 
     Kept as a single entry/exit at the outermost mode boundary so that
     transitions between summary and detail views do not flash the user's
     shell — Rich's Live runs in screen=False mode inside this buffer.
     """
-    if sys.platform == 'win32':
-        return False  # Rich handles alt screen on Windows
     sys.stdout.write('\033[?1049h\033[H')
     sys.stdout.flush()
     return True

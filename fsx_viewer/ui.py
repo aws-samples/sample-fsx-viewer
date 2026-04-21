@@ -460,18 +460,16 @@ class UI:
         # Rich's Live(screen=True) owns the alternate screen buffer — no manual
         # ANSI toggles or terminal clears are needed.
 
-        # Clear the alt screen before drawing so a previous mode's output is gone.
-        if not _is_win:
-            sys.stdout.write('\033[H\033[2J')
-            sys.stdout.flush()
+        # Clear screen before drawing so a previous mode's output is gone.
+        sys.stdout.write('\033[H\033[2J')
+        sys.stdout.flush()
 
         try:
             with Live(
                 self.render_full(),
                 console=self._console,
                 auto_refresh=False,
-                refresh_per_second=4,
-                screen=_is_win,
+                screen=False,
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
@@ -1161,18 +1159,16 @@ class DetailUI:
         # Rich's Live(screen=True) owns the alternate screen buffer — no manual
         # ANSI toggles or terminal clears are needed.
 
-        # Clear the alt screen before drawing so a previous mode's output is gone.
-        if not _is_win:
-            sys.stdout.write('\033[H\033[2J')
-            sys.stdout.flush()
+        # Clear screen before drawing so a previous mode's output is gone.
+        sys.stdout.write('\033[H\033[2J')
+        sys.stdout.flush()
 
         try:
             with Live(
                 self.render(),
                 console=self._console,
                 auto_refresh=False,
-                refresh_per_second=4,
-                screen=_is_win,
+                screen=False,
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
