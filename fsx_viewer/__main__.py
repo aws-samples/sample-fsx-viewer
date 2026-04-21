@@ -95,6 +95,26 @@ def main():
         )
 
 
+def _enter_alt_screen() -> bool:
+    """Enter the terminal's alternate screen buffer. Returns True if we did.
+
+    Kept as a single entry/exit at the outermost mode boundary so that
+    transitions between summary and detail views do not flash the user's
+    shell — Rich's Live runs in screen=False mode inside this buffer.
+    """
+    if sys.platform == 'win32':
+        return False  # Rich handles alt screen on Windows
+    sys.stdout.write('\033[?1049h\033[H')
+    sys.stdout.flush()
+    return True
+
+
+def _leave_alt_screen(entered: bool) -> None:
+    if entered:
+        sys.stdout.write('\033[?1049l')
+        sys.stdout.flush()
+
+
 def _run_summary_mode(
     config: Config,
     fsx_client: FSxClient,
@@ -105,65 +125,71 @@ def _run_summary_mode(
 ) -> int:
     """Run the summary view mode (default).
 
-    Rich's Live(screen=True) inside UI.run() owns the alternate screen buffer
-    for each mode; no manual ANSI toggles are needed here.
+    Holds the alternate screen buffer once for the whole session (non-Windows);
+    Rich's Live is configured to render inline (screen=False) so switching
+    between summary and detail views does not flash the user's shell.
     """
-    while True:
-        # Create store and controller
-        store = Store()
-        controller = Controller(
-            fsx_client=fsx_client,
-            cw_client=cw_client,
-            store=store,
-            pricing=pricing,
-            config=controller_config,
-        )
-
-        # Create UI
-        ui = UI(
-            store=store,
-            sort=config.sort,
-            style=style,
-            disable_pricing=config.disable_pricing,
-            region=config.region,
-        )
-
-        # Set up signal handlers for graceful shutdown
-        def signal_handler(sig, frame):
-            ui.stop()
-            controller.stop()
-            sys.exit(0)
-
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-
-        try:
-            controller.start()
-            ui.run()
-        except KeyboardInterrupt:
-            controller.stop()
-            return 0
-        finally:
-            controller.stop()
-
-        # Check if user selected a file system to view details
-        selected_fs_id = ui.get_selected_fs_id()
-        if selected_fs_id:
-            result = _run_detail_mode_for_fs(
-                file_system_id=selected_fs_id,
+    entered_alt = _enter_alt_screen()
+    try:
+        while True:
+            # Create store and controller
+            store = Store()
+            controller = Controller(
                 fsx_client=fsx_client,
                 cw_client=cw_client,
+                store=store,
                 pricing=pricing,
-                controller_config=controller_config,
+                config=controller_config,
+            )
+
+            # Create UI
+            ui = UI(
+                store=store,
+                sort=config.sort,
                 style=style,
                 disable_pricing=config.disable_pricing,
-                sort=config.sort,
                 region=config.region,
             )
-            if result != 0:
-                return result
-        else:
-            return 0
+
+            # Set up signal handlers for graceful shutdown
+            def signal_handler(sig, frame):
+                ui.stop()
+                controller.stop()
+                _leave_alt_screen(entered_alt)
+                sys.exit(0)
+
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+
+            try:
+                controller.start()
+                ui.run()
+            except KeyboardInterrupt:
+                controller.stop()
+                return 0
+            finally:
+                controller.stop()
+
+            # Check if user selected a file system to view details
+            selected_fs_id = ui.get_selected_fs_id()
+            if selected_fs_id:
+                result = _run_detail_mode_for_fs(
+                    file_system_id=selected_fs_id,
+                    fsx_client=fsx_client,
+                    cw_client=cw_client,
+                    pricing=pricing,
+                    controller_config=controller_config,
+                    style=style,
+                    disable_pricing=config.disable_pricing,
+                    sort=config.sort,
+                    region=config.region,
+                )
+                if result != 0:
+                    return result
+            else:
+                return 0
+    finally:
+        _leave_alt_screen(entered_alt)
 
 
 def _run_detail_mode_for_fs(
@@ -228,45 +254,21 @@ def _run_detail_mode(
     style: Style,
 ) -> int:
     """Run the detail view mode for a specific file system."""
-    store = DetailStore()
-    controller = DetailController(
-        fsx_client=fsx_client,
-        cw_client=cw_client,
-        store=store,
-        pricing=pricing,
-        file_system_id=config.file_system_id,
-        config=controller_config,
-    )
-
-    ui = DetailUI(
-        store=store,
-        style=style,
-        disable_pricing=config.disable_pricing,
-        sort=config.sort,
-        name_filter=config.name_filter,
-        region=config.region,
-    )
-
-    def signal_handler(sig, frame):
-        ui.stop()
-        controller.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
+    entered_alt = _enter_alt_screen()
     try:
-        controller.start()
-        ui.run()
-    except FileSystemNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-    except KeyboardInterrupt:
-        pass
+        return _run_detail_mode_for_fs(
+            file_system_id=config.file_system_id,
+            fsx_client=fsx_client,
+            cw_client=cw_client,
+            pricing=pricing,
+            controller_config=controller_config,
+            style=style,
+            disable_pricing=config.disable_pricing,
+            sort=config.sort,
+            region=config.region,
+        )
     finally:
-        controller.stop()
-
-    return 0
+        _leave_alt_screen(entered_alt)
 
 
 if __name__ == "__main__":

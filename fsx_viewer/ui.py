@@ -460,12 +460,18 @@ class UI:
         # Rich's Live(screen=True) owns the alternate screen buffer — no manual
         # ANSI toggles or terminal clears are needed.
 
+        # Clear the alt screen before drawing so a previous mode's output is gone.
+        if not _is_win:
+            sys.stdout.write('\033[H\033[2J')
+            sys.stdout.flush()
+
         try:
             with Live(
                 self.render_full(),
                 console=self._console,
+                auto_refresh=(_is_win),
                 refresh_per_second=4,
-                screen=True,
+                screen=_is_win,
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
@@ -510,6 +516,10 @@ class UI:
                     last_tick = 0.0
                     ESC_TIMEOUT = 0.15
                     RENDER_INTERVAL = 0.25
+
+                    # Prime the display
+                    live.update(self.render_full(), refresh=True)
+                    last_tick = _time.monotonic()
 
                     while self._running:
                         dirty = False
@@ -578,7 +588,7 @@ class UI:
 
                         now = _time.monotonic()
                         if dirty or (now - last_tick) >= RENDER_INTERVAL:
-                            live.update(self.render_full())
+                            live.update(self.render_full(), refresh=True)
                             last_tick = now
                 finally:
                     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
@@ -1149,12 +1159,18 @@ class DetailUI:
         # Rich's Live(screen=True) owns the alternate screen buffer — no manual
         # ANSI toggles or terminal clears are needed.
 
+        # Clear the alt screen before drawing so a previous mode's output is gone.
+        if not _is_win:
+            sys.stdout.write('\033[H\033[2J')
+            sys.stdout.flush()
+
         try:
             with Live(
                 self.render(),
                 console=self._console,
+                auto_refresh=(_is_win),
                 refresh_per_second=4,
-                screen=True,
+                screen=_is_win,
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
@@ -1222,7 +1238,7 @@ class DetailUI:
                     ESC_TIMEOUT = 0.15  # seconds to wait for more bytes after bare ESC
 
                     # Prime the display
-                    live.update(self.render())
+                    live.update(self.render(), refresh=True)
                     last_tick = _time.monotonic()
 
                     while self._running:
@@ -1285,7 +1301,7 @@ class DetailUI:
                                 dirty = True
 
                         if dirty or (_time.monotonic() - last_tick) >= 0.25:
-                            live.update(self.render())
+                            live.update(self.render(), refresh=True)
                             last_tick = _time.monotonic()
                 finally:
                     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
