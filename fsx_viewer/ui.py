@@ -503,8 +503,9 @@ class UI:
                         else:
                             _wtime.sleep(0.05)
                         now = _wtime.monotonic()
-                        if dirty or (now - last_render) >= 0.25:
-                            live.update(self.render_full(), refresh=True)
+                        if dirty or (now - last_render) >= 1.0:
+                            rendered = self.render_full()
+                            live.update(rendered, refresh=True)
                             last_render = now
                 else:
                     import select
@@ -1206,7 +1207,7 @@ class DetailUI:
                         else:
                             _wtime.sleep(0.05)
                         now = _wtime.monotonic()
-                        if dirty or (now - last_render) >= 0.25:
+                        if dirty or (now - last_render) >= 1.0:
                             live.update(self.render(), refresh=True)
                             last_render = now
                 else:
