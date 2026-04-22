@@ -14,6 +14,32 @@ from rich.text import Text
 from .model import Store, FileSystem, Stats, FileSystemType, DetailStore, Volume, MetadataServer
 
 
+def _has_vt_support() -> bool:
+    """Check if the terminal supports ANSI/VT escape sequences."""
+    if sys.platform != 'win32':
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_ulong()
+        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        return bool(mode.value & 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        return False
+
+
+_VT_OK = _has_vt_support()
+
+
+def _clear_screen():
+    """Clear the terminal screen using the best available method."""
+    if _VT_OK:
+        sys.stdout.write('\033[H\033[2J')
+        sys.stdout.flush()
+    elif sys.platform == 'win32':
+        import os; os.system('cls')
+
 def interpolate_color(position: float) -> str:
     """Interpolate RGB color for smooth gradient from green -> yellow -> orange -> red.
     
@@ -461,15 +487,14 @@ class UI:
         # ANSI toggles or terminal clears are needed.
 
         # Clear screen before drawing so a previous mode's output is gone.
-        sys.stdout.write('\033[H\033[2J')
-        sys.stdout.flush()
+        _clear_screen()
 
         try:
             with Live(
                 self.render_full(),
                 console=self._console,
                 auto_refresh=False,
-                screen=False,
+                screen=(not _VT_OK),
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread
@@ -1161,15 +1186,14 @@ class DetailUI:
         # ANSI toggles or terminal clears are needed.
 
         # Clear screen before drawing so a previous mode's output is gone.
-        sys.stdout.write('\033[H\033[2J')
-        sys.stdout.flush()
+        _clear_screen()
 
         try:
             with Live(
                 self.render(),
                 console=self._console,
                 auto_refresh=False,
-                screen=False,
+                screen=(not _VT_OK),
                 vertical_overflow="visible",
             ) as live:
                 # Set up keyboard handling in a separate thread

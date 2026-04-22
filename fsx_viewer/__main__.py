@@ -95,16 +95,42 @@ def main():
         )
 
 
-def _enter_alt_screen() -> bool:
-    """Enter the terminal's alternate screen buffer.
+def _enable_win_vt() -> bool:
+    """Enable Virtual Terminal Processing on Windows so ANSI escapes work.
 
-    Kept as a single entry/exit at the outermost mode boundary so that
-    transitions between summary and detail views do not flash the user's
-    shell — Rich's Live runs in screen=False mode inside this buffer.
+    Returns True if VT mode is active (either already enabled or we enabled it).
+    Returns False if we couldn't enable it (legacy console).
     """
-    sys.stdout.write('\033[?1049h\033[H')
-    sys.stdout.flush()
-    return True
+    if sys.platform != 'win32':
+        return True  # Unix always supports ANSI
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        handle = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        mode = ctypes.c_ulong()
+        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+        return True
+    except Exception:
+        return False
+
+
+# Whether ANSI escapes work in this terminal (set once at startup)
+_vt_enabled = _enable_win_vt()
+
+
+def _enter_alt_screen() -> bool:
+    """Enter the terminal's alternate screen buffer."""
+    if _vt_enabled:
+        sys.stdout.write('\033[?1049h\033[H')
+        sys.stdout.flush()
+        return True
+    elif sys.platform == 'win32':
+        import os; os.system('cls')
+        return False
+    return False
 
 
 def _leave_alt_screen(entered: bool) -> None:
