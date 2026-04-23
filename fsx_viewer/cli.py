@@ -10,6 +10,22 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+# CloudWatch publishes FSx metrics at 1-minute granularity, so polling faster
+# is wasteful and produces no new datapoints.
+_MIN_METRIC_INTERVAL = 60
+
+
+def _clamp_metric_interval(seconds: int) -> int:
+    """Clamp metric polling interval to CloudWatch's 60-second publish rate."""
+    if seconds < _MIN_METRIC_INTERVAL:
+        logger.warning(
+            "metric-interval %ds is below CloudWatch's 60s publish rate for FSx; "
+            "clamping to %ds.", seconds, _MIN_METRIC_INTERVAL,
+        )
+        return _MIN_METRIC_INTERVAL
+    return seconds
+
+
 @dataclass
 class Config:
     """Configuration from CLI args, env vars, and config file."""
@@ -183,9 +199,9 @@ def parse_args(args: Optional[list] = None) -> Config:
         refresh_interval=int(
             get_value(parsed.refresh_interval, None, "refresh_interval", 300)
         ),
-        metric_interval=int(
+        metric_interval=_clamp_metric_interval(int(
             get_value(parsed.metric_interval, None, "metric_interval", 60)
-        ),
+        )),
         disable_pricing=parsed.disable_pricing
         if parsed.disable_pricing
         else file_config.get("disable_pricing", "false").lower() == "true",

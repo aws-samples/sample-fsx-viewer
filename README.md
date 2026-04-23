@@ -28,6 +28,7 @@ A terminal-based monitoring tool for Amazon FSx file systems. Displays storage u
   - `fsx:DescribeS3AccessPointAttachments` (optional; enables S3 access point column/drill-down for ONTAP/OpenZFS volumes)
   - `cloudwatch:GetMetricData`
   - `cloudwatch:ListMetrics`
+  - `ec2:DescribeSubnets` (optional; resolves subnet IDs to AZ names in the detail view)
 
 ## Installation
 

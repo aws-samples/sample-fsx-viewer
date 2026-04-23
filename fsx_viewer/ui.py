@@ -11,7 +11,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 
-from .model import Store, FileSystem, Stats, FileSystemType, DetailStore, Volume, MetadataServer
+from .model import Store, FileSystem, Stats, FileSystemType, DetailStore, Volume, MetadataServer, ObjectStorageServer, ObjectStorageTarget, LatencyMetrics
 
 
 def _has_vt_support() -> bool:
@@ -790,6 +790,147 @@ class DetailUI:
 
         return Panel(Group(header, table, help_text), title=f"{fs.name} / {vol.id}", border_style="cyan")
     
+    def _render_perf_panel(self, fs: FileSystem) -> List[Table]:
+        """Render performance utilization as a single combined table.
+
+        Returns a one-element list (or empty) so the caller can splat it into
+        a Group the same way as before.
+        """
+        perf = fs.perf_metrics
+        has_cpu = fs.cpu_utilization > 0
+        if (perf is None or not perf.any()) and not has_cpu:
+            return []
+
+        # (label, value, inverted); inverted=True means higher is better, so
+        # the gradient is flipped (100% = green, 0% = red).
+        rows: List = []
+
+        def add(label: str, value: Optional[float], inverted: bool = False) -> None:
+            if value is None:
+                return
+            rows.append((label, value, inverted))
+
+        if has_cpu:
+            add("CPU utilization", fs.cpu_utilization)
+        if perf is not None:
+            add("Network throughput util", perf.network_throughput_util)
+            add("Disk throughput util", perf.disk_throughput_util)
+            add("Disk throughput burst", perf.disk_throughput_burst_balance, inverted=True)
+            add("Disk IOPS util", perf.disk_iops_util)
+            add("Disk IOPS burst", perf.disk_iops_burst_balance, inverted=True)
+            add("Cache hit ratio", perf.cache_hit_ratio, inverted=True)
+            add("Disk IOPS util (SSD)", perf.ssd_iops_util)
+
+        if not rows:
+            return []
+
+        t = Table(
+            title="File Server and SSD performance",
+            title_style="bold dim",
+            title_justify="left",
+            show_header=False,
+            border_style="dim",
+            expand=True,
+            padding=(0, 1),
+        )
+        t.add_column("Metric", style="dim", min_width=22)
+        t.add_column("Value", min_width=45)
+        for label, value, inverted in rows:
+            frac = max(0.0, min(1.0, float(value) / 100.0))
+            if inverted:
+                # Higher value = better: invert the gradient palette so a full
+                # bar renders green (healthy), empty bar renders red.
+                bar = Text()
+                filled = int(frac * 30)
+                for i in range(filled):
+                    pos = 1.0 - ((i + 1) / 30)
+                    bar.append("█", style=interpolate_color(pos))
+                bar.append("░" * (30 - filled), style="dim")
+            else:
+                bar = self._render_progress_bar(frac, width=30, gradient=True)
+            cell = Text()
+            cell.append_text(bar)
+            cell.append(f" {value:5.1f}%")
+            t.add_row(label, cell)
+
+        return [t]
+
+    def _render_latency_table(self, fs: FileSystem) -> Optional[Table]:
+        """Render the read/write/metadata latency table (avg ms/op).
+
+        Returns None only for Lustre (no latency metrics are published).
+        For other FS types the table is always rendered; rows with no recent
+        operations (zero ops in the last minute) display as ``—``.
+        Values are bold and color-graded:
+        - bright_white for <= 2 ms (normal)
+        - yellow for 2-10 ms (slow)
+        - red for > 10 ms (very slow)
+        """
+        if fs.type == FileSystemType.LUSTRE:
+            return None
+        lat = fs.latency_metrics or LatencyMetrics()
+
+        t = Table(
+            title="Latency (avg ms/op)",
+            title_style="bold dim",
+            title_justify="left",
+            show_header=False,
+            border_style="dim",
+            expand=True,
+            padding=(0, 1),
+        )
+        t.add_column("Op", style="dim", min_width=10)
+        t.add_column("Value", justify="right")
+
+        def color(ms: Optional[float]) -> str:
+            if ms is None:
+                return "dim"
+            if ms > 10:
+                return "bold red"
+            if ms > 2:
+                return "bold yellow"
+            return "bold bright_white"
+
+        def cell(ms: Optional[float]) -> Text:
+            if ms is None:
+                return Text("—", style="dim")
+            return Text(f"{ms:.2f} ms", style=color(ms))
+
+        # Order: Read, Write, Metadata. Hide Metadata row entirely on Windows
+        # (it never has the metric) to avoid a perpetually-dim row.
+        t.add_row("Read", cell(lat.read_ms))
+        t.add_row("Write", cell(lat.write_ms))
+        if fs.type != FileSystemType.WINDOWS:
+            t.add_row("Metadata", cell(lat.metadata_ms))
+        return t
+
+    def _perf_parts(self, fs: FileSystem) -> List:
+        """Return a renderable list ([Text(''), ...]) for the Group.
+
+        When both the perf panel and latency table are present, they render
+        side-by-side in a 60/40 grid that reflows with terminal width.
+        Otherwise either one (or neither) is emitted full-width.
+        """
+        perf_tables = self._render_perf_panel(fs)
+        latency_table = self._render_latency_table(fs)
+
+        if not perf_tables and latency_table is None:
+            return []
+
+        if perf_tables and latency_table is not None:
+            layout = Table.grid(expand=True, padding=(0, 1))
+            layout.add_column(ratio=3)  # 60%
+            layout.add_column(ratio=2)  # 40%
+            layout.add_row(perf_tables[0], latency_table)
+            return [Text(""), layout]
+
+        parts: List = []
+        for t in perf_tables:
+            parts += [Text(""), t]
+        if latency_table is not None:
+            parts += [Text(""), latency_table]
+        return parts
+
     def _render_progress_bar(self, utilization: float, width: int = 12, gradient: bool = False) -> Text:
         """Render a progress bar for utilization.
         
@@ -852,34 +993,64 @@ class DetailUI:
         header.append(f"{fs.type.value}", style="bold")
         header.append(" | ")
         header.append(f"{fs.storage_capacity} GiB", style="cyan")
-        
+
         if fs.used_capacity > 0:
             utilization = fs.utilization() * 100
             header.append(f" ({utilization:.1f}% used)")
-        
+
+        # Deployment type, HA pairs (ONTAP only when >1), and AZs.
+        if fs.deployment_type:
+            header.append(" | ")
+            header.append("Deployment: ", style="dim")
+            header.append(fs.deployment_type)
+        if fs.type == FileSystemType.ONTAP and fs.ha_pairs > 1:
+            header.append(" | ")
+            header.append("HA pairs: ", style="dim")
+            header.append(str(fs.ha_pairs))
+        if any(fs.availability_zones):
+            header.append(" | ")
+            header.append("AZ: ", style="dim")
+            header.append(self._format_azs(fs))
+
         return header
-    
+
+    def _format_azs(self, fs: FileSystem) -> str:
+        """Format AZ list, labelling preferred vs standby for Multi-AZ FS."""
+        # Single-AZ (or missing preferred subnet info): just the AZ name(s).
+        is_multi_az = bool(fs.preferred_subnet_id) and len([s for s in fs.availability_zones if s]) > 1
+        if not is_multi_az:
+            return ", ".join(az for az in fs.availability_zones if az)
+
+        # Pair each AZ with its subnet; preferred subnet -> preferred AZ.
+        pairs = list(zip(fs.subnet_ids, fs.availability_zones))
+        preferred = next((az for sn, az in pairs if sn == fs.preferred_subnet_id and az), None)
+        standby = [az for sn, az in pairs if sn != fs.preferred_subnet_id and az]
+        parts = []
+        if preferred:
+            parts.append(f"{preferred} (preferred)")
+        parts.extend(f"{az} (standby)" for az in standby)
+        return ", ".join(parts)
+
     def _render_fs_metrics(self, fs: FileSystem) -> Text:
-        """Render file system level metrics."""
+        """Render provisioned throughput/IOPS for the file system."""
         metrics = Text()
-        
-        # Throughput
-        throughput = fs.total_throughput()
-        metrics.append("Throughput: ", style="dim")
-        metrics.append(f"{throughput:.1f} MiB/s" if throughput > 0 else "-")
+
+        # Provisioned throughput capacity. Lustre's value is MBps per TiB;
+        # others are flat MBps.
+        if fs.throughput_capacity > 0:
+            metrics.append("Provisioned throughput: ", style="dim")
+            if fs.type == FileSystemType.LUSTRE:
+                metrics.append(f"{fs.throughput_capacity} MBps/TiB")
+            else:
+                metrics.append(f"{fs.throughput_capacity} MBps")
+        else:
+            metrics.append("Provisioned throughput: ", style="dim")
+            metrics.append("-")
+
         metrics.append(" | ")
-        
-        # IOPS
-        iops = fs.total_iops()
-        metrics.append("IOPS: ", style="dim")
-        metrics.append(f"{iops:.0f}" if iops > 0 else "-")
-        
-        # CPU (if available)
-        if fs.cpu_utilization > 0:
-            metrics.append(" | ")
-            metrics.append("CPU: ", style="dim")
-            metrics.append(f"{fs.cpu_utilization:.0f}%")
-        
+        metrics.append("Provisioned IOPS: ", style="dim")
+        metrics.append(f"{fs.provisioned_iops:,}" if fs.provisioned_iops > 0 else "-")
+
         return metrics
     
     def _render_page_info(self, total_items: int) -> Text:
@@ -1013,21 +1184,21 @@ class DetailUI:
         header = self._render_header(fs)
         metrics = self._render_fs_metrics(fs)
         pricing = self._render_pricing_breakdown(fs)
-        
+        perf_parts = self._perf_parts(fs)
+
         # Volume table with pagination
         if volumes:
             total_pages = self._get_page_count(len(volumes))
             page_volumes = self._get_page_items(volumes)
             volume_table = self._render_volume_table(page_volumes, "ONTAP")
             page_info = self._render_page_info(len(volumes))
-            content = Group(header, metrics, pricing, Text(""), volume_table, Text(""), page_info)
+            parts = [header, metrics, pricing, *perf_parts,
+                     Text(""), volume_table, Text(""), page_info]
+            content = Group(*parts)
         else:
-            content = Group(
-                header,
-                metrics,
-                Text(""),
-                Text("Discovering volumes...", style="dim italic"),
-            )
+            parts = [header, metrics, *perf_parts,
+                     Text(""), Text("Discovering volumes...", style="dim italic")]
+            content = Group(*parts)
         
         return Panel(
             content,
@@ -1042,21 +1213,21 @@ class DetailUI:
         header = self._render_header(fs)
         metrics = self._render_fs_metrics(fs)
         pricing = self._render_pricing_breakdown(fs)
-        
+        perf_parts = self._perf_parts(fs)
+
         # Volume table with pagination (pass fs capacity for volumes without quota)
         if volumes:
             total_pages = self._get_page_count(len(volumes))
             page_volumes = self._get_page_items(volumes)
             volume_table = self._render_volume_table(page_volumes, "OPENZFS", fs.storage_capacity)
             page_info = self._render_page_info(len(volumes))
-            content = Group(header, metrics, pricing, Text(""), volume_table, Text(""), page_info)
+            parts = [header, metrics, pricing, *perf_parts,
+                     Text(""), volume_table, Text(""), page_info]
+            content = Group(*parts)
         else:
-            content = Group(
-                header,
-                metrics,
-                Text(""),
-                Text("Discovering volumes...", style="dim italic"),
-            )
+            parts = [header, metrics, *perf_parts,
+                     Text(""), Text("Discovering volumes...", style="dim italic")]
+            content = Group(*parts)
         
         return Panel(
             content,
@@ -1064,15 +1235,79 @@ class DetailUI:
             border_style="blue",
         )
     
+    def _render_oss_table(self, oss_list: List[ObjectStorageServer]) -> Optional[Table]:
+        """Render per-OSS utilization table (Lustre). Returns None if empty."""
+        if not oss_list:
+            return None
+        t = Table(
+            title="Object storage servers (OSS)",
+            title_style="bold dim",
+            title_justify="left",
+            show_header=True,
+            header_style="bold",
+            border_style="dim",
+            expand=True,
+        )
+        t.add_column("OSS ID", style="cyan", no_wrap=True, min_width=10)
+        t.add_column("Network throughput util", width=42)
+        t.add_column("Disk throughput util", width=42)
+        for o in oss_list:
+            def _bar(v: float) -> Text:
+                b = self._render_progress_bar(max(0.0, min(1.0, v / 100.0)), width=30, gradient=True)
+                cell = Text()
+                cell.append_text(b)
+                cell.append(f" {v:5.1f}%")
+                return cell
+            t.add_row(o.id, _bar(o.network_throughput_util), _bar(o.disk_throughput_util))
+        return t
+
+    def _render_ost_table(self, ost_list: List[ObjectStorageTarget]) -> Optional[Table]:
+        """Render per-OST utilization table (Lustre). Returns None if empty."""
+        if not ost_list:
+            return None
+        t = Table(
+            title="Object storage targets (OST)",
+            title_style="bold dim",
+            title_justify="left",
+            show_header=True,
+            header_style="bold",
+            border_style="dim",
+            expand=True,
+        )
+        t.add_column("OST ID", style="cyan", no_wrap=True, min_width=10)
+        t.add_column("Disk IOPS util (SSD)", width=42)
+        t.add_column("Storage capacity util", width=42)
+        for o in ost_list:
+            def _bar(v: float) -> Text:
+                b = self._render_progress_bar(max(0.0, min(1.0, v / 100.0)), width=30, gradient=True)
+                cell = Text()
+                cell.append_text(b)
+                cell.append(f" {v:5.1f}%")
+                return cell
+            iops_cell = Text("-") if o.disk_iops_util is None else _bar(o.disk_iops_util)
+            t.add_row(o.id, iops_cell, _bar(o.storage_capacity_util))
+        return t
+
     def _render_lustre_detail(self, fs: FileSystem) -> Panel:
         """Render Lustre file system with MDS CPU breakdown."""
         mds_servers = self._store.get_mds_servers()
-        
+        oss_servers = self._store.get_oss_servers()
+        ost_targets = self._store.get_ost_targets()
+
         # Header with file system info
         header = self._render_header(fs)
         metrics = self._render_fs_metrics(fs)
         pricing = self._render_pricing_breakdown(fs)
-        
+        perf_parts = self._perf_parts(fs)
+
+        # OSS/OST tables (each may be None when empty)
+        oss_table = self._render_oss_table(oss_servers)
+        ost_table = self._render_ost_table(ost_targets)
+        per_server_parts: List = []
+        for t in (oss_table, ost_table):
+            if t is not None:
+                per_server_parts += [Text(""), t]
+
         # MDS table
         mds_table = Table(
             show_header=True,
@@ -1100,15 +1335,15 @@ class DetailUI:
             
             # Page info
             page_info = self._render_page_info(len(mds_servers))
-            content = Group(header, metrics, pricing, Text(""), mds_table, Text(""), page_info)
+            parts = [header, metrics, pricing, *perf_parts,
+                     Text(""), mds_table, *per_server_parts,
+                     Text(""), page_info]
+            content = Group(*parts)
         else:
-            content = Group(
-                header,
-                metrics,
-                pricing,
-                Text(""),
-                Text("Discovering MDS servers...", style="dim italic"),
-            )
+            parts = [header, metrics, pricing, *perf_parts,
+                     *per_server_parts,
+                     Text(""), Text("Discovering MDS servers...", style="dim italic")]
+            content = Group(*parts)
         
         return Panel(
             content,
@@ -1163,8 +1398,11 @@ class DetailUI:
         
         # Message about no sub-resources
         no_sub_msg = Text("No sub-resources available for Windows file systems", style="dim italic")
-        
-        content = Group(header, pricing, Text(""), metrics_table, Text(""), no_sub_msg)
+
+        perf_parts = self._perf_parts(fs)
+        parts = [header, pricing, Text(""), metrics_table, *perf_parts,
+                 Text(""), no_sub_msg]
+        content = Group(*parts)
         
         return Panel(
             content,

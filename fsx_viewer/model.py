@@ -39,6 +39,46 @@ class Metrics:
     write_iops: float = 0.0
     cpu_utilization: float = 0.0  # percentage (0-100)
     capacity_pool_used_gb: Optional[float] = None  # ONTAP capacity pool usage in GB
+    perf_metrics: Optional['PerfMetrics'] = None  # Populated in detail view
+    latency_metrics: Optional['LatencyMetrics'] = None  # Populated in detail view
+
+
+@dataclass
+class PerfMetrics:
+    """File-server performance utilization metrics (percentages 0-100).
+
+    Each field is Optional; None means the metric is not applicable or not
+    yet available for the file system type.
+    """
+    network_throughput_util: Optional[float] = None       # NetworkThroughputUtilization
+    disk_throughput_util: Optional[float] = None          # FileServerDiskThroughputUtilization
+    disk_throughput_burst_balance: Optional[float] = None # FileServerDiskThroughputBalance
+    disk_iops_util: Optional[float] = None                # FileServerDiskIopsUtilization
+    disk_iops_burst_balance: Optional[float] = None       # FileServerDiskIopsBalance
+    cache_hit_ratio: Optional[float] = None               # FileServerCacheHitRatio
+    ssd_iops_util: Optional[float] = None                 # DiskIopsUtilization (SSD)
+
+    def any(self) -> bool:
+        return any(v is not None for v in (
+            self.network_throughput_util, self.disk_throughput_util,
+            self.disk_throughput_burst_balance, self.disk_iops_util,
+            self.disk_iops_burst_balance, self.cache_hit_ratio, self.ssd_iops_util,
+        ))
+
+
+@dataclass
+class LatencyMetrics:
+    """Average client-observed latency per operation, in milliseconds.
+
+    Each field is Optional; None means the metric is not applicable (e.g.
+    metadata latency on Windows) or not available yet.
+    """
+    read_ms: Optional[float] = None
+    write_ms: Optional[float] = None
+    metadata_ms: Optional[float] = None
+
+    def any(self) -> bool:
+        return any(v is not None for v in (self.read_ms, self.write_ms, self.metadata_ms))
 
 
 @dataclass
@@ -56,6 +96,10 @@ class FileSystem:
     storage_type: str = "SSD"  # SSD, HDD
     throughput_capacity: int = 0  # MBps (provisioned throughput)
     provisioned_iops: int = 0  # Provisioned IOPS (if applicable)
+    ha_pairs: int = 1  # ONTAP only; 1 for other FS types
+    subnet_ids: List[str] = field(default_factory=list)
+    preferred_subnet_id: Optional[str] = None  # Multi-AZ only
+    availability_zones: List[str] = field(default_factory=list)  # Resolved lazily
     
     # Metrics
     used_capacity: int = 0
@@ -69,6 +113,10 @@ class FileSystem:
     hourly_price: float = 0.0
     pricing_breakdown: Optional['PricingBreakdown'] = None
     capacity_pool_used_gb: Optional[float] = None
+
+    # File-server performance utilization (detail view)
+    perf_metrics: Optional['PerfMetrics'] = None
+    latency_metrics: Optional['LatencyMetrics'] = None
     
     # Display state
     visible: bool = True
@@ -186,6 +234,24 @@ class MetadataServer:
     cpu_utilization: float = 0.0  # 0-100 percentage
 
 
+@dataclass
+class ObjectStorageServer:
+    """Lustre OSS with network and disk-throughput utilization metrics."""
+    id: str                    # e.g., "OSS0000"
+    file_system_id: str
+    network_throughput_util: float = 0.0   # percent 0-100
+    disk_throughput_util: float = 0.0      # percent 0-100
+
+
+@dataclass
+class ObjectStorageTarget:
+    """Lustre OST with disk-IOPS and storage-capacity utilization metrics."""
+    id: str                    # e.g., "OST0000"
+    file_system_id: str
+    disk_iops_util: Optional[float] = None       # percent 0-100; None on Scratch/HDD
+    storage_capacity_util: float = 0.0           # percent 0-100
+
+
 class DetailStore:
     """Thread-safe store for detail view data."""
     
@@ -194,6 +260,8 @@ class DetailStore:
         self._file_system: Optional[FileSystem] = None
         self._volumes: Dict[str, Volume] = {}
         self._mds_servers: Dict[str, MetadataServer] = {}
+        self._oss_servers: Dict[str, ObjectStorageServer] = {}
+        self._ost_targets: Dict[str, ObjectStorageTarget] = {}
     
     def set_file_system(self, fs: FileSystem) -> None:
         """Set the file system for detail view."""
@@ -224,6 +292,22 @@ class DetailStore:
         """Get all MDS servers sorted by ID."""
         with self._lock:
             return sorted(self._mds_servers.values(), key=lambda m: m.id)
+
+    def add_oss(self, oss: ObjectStorageServer) -> None:
+        with self._lock:
+            self._oss_servers[oss.id] = oss
+
+    def get_oss_servers(self) -> List[ObjectStorageServer]:
+        with self._lock:
+            return sorted(self._oss_servers.values(), key=lambda o: o.id)
+
+    def add_ost(self, ost: ObjectStorageTarget) -> None:
+        with self._lock:
+            self._ost_targets[ost.id] = ost
+
+    def get_ost_targets(self) -> List[ObjectStorageTarget]:
+        with self._lock:
+            return sorted(self._ost_targets.values(), key=lambda o: o.id)
 
 
 class Store:

@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Tuple
 
-from .model import FileSystem, FileSystemType, Metrics, Volume, MetadataServer, PricingBreakdown, AccessPoint
+from .model import FileSystem, FileSystemType, Metrics, Volume, MetadataServer, PricingBreakdown, AccessPoint, PerfMetrics, LatencyMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,32 @@ class FSxClient:
         if session is None:
             session = boto3.Session(profile_name=profile, region_name=region)
         self._client = session.client('fsx')
+        self._session = session
+        self._ec2_client = None
+        self._az_cache: Dict[str, str] = {}  # subnet_id -> AZ name
+
+    def resolve_azs(self, subnet_ids: List[str]) -> List[str]:
+        """Resolve subnet IDs to availability-zone names, cached per client.
+
+        Returns an empty list (and logs a warning once) when the caller lacks
+        ``ec2:DescribeSubnets`` permission.
+        """
+        missing = [s for s in subnet_ids if s and s not in self._az_cache]
+        if missing:
+            try:
+                if self._ec2_client is None:
+                    self._ec2_client = self._session.client('ec2')
+                resp = self._ec2_client.describe_subnets(SubnetIds=missing)
+                for s in resp.get('Subnets', []):
+                    self._az_cache[s['SubnetId']] = s.get('AvailabilityZone', '')
+            except Exception as e:
+                logger.warning(f"Failed to resolve AZs for subnets {missing}: {e}")
+                # Cache empty to avoid retrying every cycle
+                for s in missing:
+                    self._az_cache.setdefault(s, '')
+        # Preserve positional alignment with subnet_ids (empty string when
+        # resolution failed) so callers can zip(subnet_ids, availability_zones).
+        return [self._az_cache.get(s, '') for s in subnet_ids]
     
     def list_file_systems(self, fs_type: Optional[str] = None) -> List[FileSystem]:
         """List all FSx file systems, optionally filtered by type."""
@@ -69,7 +95,12 @@ class FSxClient:
         # Extract type-specific configuration for pricing
         deployment_type, storage_type, throughput_capacity, provisioned_iops = \
             self._extract_pricing_config(fs, fs_type_enum)
-        
+
+        # HA pairs (ONTAP only) and subnet placement (all types)
+        ha_pairs = 1
+        if fs_type_enum == FileSystemType.ONTAP:
+            ha_pairs = fs.get('OntapConfiguration', {}).get('HAPairs', 1) or 1
+
         return FileSystem(
             id=fs_id,
             name=name if name else fs_id,
@@ -81,6 +112,9 @@ class FSxClient:
             storage_type=storage_type,
             throughput_capacity=throughput_capacity,
             provisioned_iops=provisioned_iops,
+            ha_pairs=ha_pairs,
+            subnet_ids=list(fs.get('SubnetIds', []) or []),
+            preferred_subnet_id=fs.get('PreferredSubnetId') or None,
         )
     
     def _extract_pricing_config(self, fs: dict, fs_type: FileSystemType) -> tuple:
@@ -260,22 +294,38 @@ class CloudWatchClient:
         self._client = session.client('cloudwatch')
     
     def get_file_system_metrics(self, fs_id: str, fs_type: FileSystemType) -> Metrics:
-        """Retrieve CloudWatch metrics for a specific file system."""
+        """Retrieve CloudWatch metrics for a specific file system.
+
+        For the detail view, this single call also pulls the file-server
+        performance utilization metrics and attaches them to
+        ``Metrics.perf_metrics`` so callers don't need a second GetMetricData.
+        """
         metrics = Metrics()
         end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(minutes=5)
+        # 10-minute window covers the 300s-Period perf burst-balance queries
+        # (FileServerDiskThroughputBalance / FileServerDiskIopsBalance) that
+        # are folded into this request. ScanBy=TimestampDescending ensures the
+        # 60s-Period metrics still return their most-recent datapoint first.
+        start_time = end_time - timedelta(minutes=10)
         
         # Define metrics based on file system type
         metric_queries = self._build_metric_queries(fs_id, fs_type)
-        
+        # Append perf utilization queries so we can issue a single GetMetricData.
+        perf_queries, perf_attr_map = self._build_perf_queries(fs_id, fs_type)
+        metric_queries.extend(perf_queries)
+        # Append latency math queries (read/write/metadata ms per op).
+        latency_queries, latency_attr_map = self._build_latency_queries(fs_id, fs_type)
+        metric_queries.extend(latency_queries)
+
         if not metric_queries:
             return metrics
-        
+
         try:
             response = self._client.get_metric_data(
                 MetricDataQueries=metric_queries,
                 StartTime=start_time,
                 EndTime=end_time,
+                ScanBy='TimestampDescending',
             )
             
             for result in response.get('MetricDataResults', []):
@@ -305,7 +355,18 @@ class CloudWatchClient:
                 elif metric_id == 'cpu_util_avg':
                     metrics.cpu_utilization = value  # Average from SEARCH expression
                 elif metric_id == 'capacity_pool_used':
-                    metrics.capacity_pool_used_gb = value / (1024 * 1024 * 1024)  # bytes -> GB            
+                    metrics.capacity_pool_used_gb = value / (1024 * 1024 * 1024)  # bytes -> GB
+                elif metric_id in perf_attr_map:
+                    if metrics.perf_metrics is None:
+                        metrics.perf_metrics = PerfMetrics()
+                    setattr(metrics.perf_metrics, perf_attr_map[metric_id], float(value))
+                elif metric_id in latency_attr_map:
+                    if metrics.latency_metrics is None:
+                        metrics.latency_metrics = LatencyMetrics()
+                    setattr(metrics.latency_metrics, latency_attr_map[metric_id], float(value))
+                    logger.debug(
+                        "latency %s=%.3f ms for %s", latency_attr_map[metric_id], float(value), fs_id,
+                    )
             # For Lustre, fetch CPU separately with FileServer dimension
             if fs_type == FileSystemType.LUSTRE and metrics.cpu_utilization == 0:
                 cpu = self._get_lustre_cpu(fs_id, start_time, end_time)
@@ -989,7 +1050,225 @@ class CloudWatchClient:
             logger.warning(f"Failed to get batch CPU for Lustre MDS servers: {e}")
         
         return result
+
+    def get_lustre_per_server_metrics(self, fs_id: str) -> Dict[str, Dict[str, Any]]:
+        """Single GetMetricData call that returns per-MDS, per-OSS, and per-OST metrics.
+
+        Uses SEARCH expressions so no client-side dimension discovery is needed.
+        Each SEARCH returns one timeseries per matching dimension value and
+        CloudWatch labels them with a rendered form that embeds the dimension
+        value (e.g. ``{FileSystemId} MDS0000 CPUUtilization``). We pattern-match
+        on the OSS/OST/MDS prefix to route the result to the right bucket.
+
+        Returned shape::
+
+            {
+                'mds': {mds_id: cpu_util},
+                'oss': {oss_id: {'network_throughput_util': .., 'disk_throughput_util': ..}},
+                'ost': {ost_id: {'disk_iops_util': .., 'storage_capacity_util': ..}},
+            }
+        """
+        result: Dict[str, Dict[str, Any]] = {'mds': {}, 'oss': {}, 'ost': {}}
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(minutes=10)
+
+        # Custom label uses CloudWatch's `${PROP('Dim.FileServer')}` template
+        # syntax so every returned timeseries carries an unambiguous
+        # "<qid>|<dimension-value>" label.
+        def search(qid: str, dim_schema: str, metric_name: str) -> Dict[str, Any]:
+            return {
+                'Id': qid,
+                'Expression': (
+                    f"SEARCH('{{AWS/FSx,FileSystemId,{dim_schema}}} "
+                    f"MetricName=\"{metric_name}\" FileSystemId=\"{fs_id}\"', 'Average', 60)"
+                ),
+                'Period': 60,
+                'Label': f"{qid}|${{PROP('Dim.{dim_schema}')}}",
+                'ReturnData': True,
+            }
+
+        queries = [
+            search('mds_cpu', 'FileServer', 'CPUUtilization'),
+            search('oss_net', 'FileServer', 'NetworkThroughputUtilization'),
+            search('oss_dtu', 'FileServer', 'FileServerDiskThroughputUtilization'),
+            search('ost_iops', 'StorageTargetId', 'DiskIopsUtilization'),
+            search('ost_cap', 'StorageTargetId', 'StorageCapacityUtilization'),
+        ]
+
+        try:
+            response = self._client.get_metric_data(
+                MetricDataQueries=queries,
+                StartTime=start_time,
+                EndTime=end_time,
+                ScanBy='TimestampDescending',
+            )
+            for r in response.get('MetricDataResults', []):
+                values = r.get('Values', [])
+                if not values:
+                    continue
+                value = float(values[0])
+                label = r.get('Label', '')
+                if '|' not in label:
+                    continue
+                qid, dim_value = label.split('|', 1)
+                dim_value = dim_value.strip()
+                if not dim_value:
+                    continue
+                if qid == 'mds_cpu':
+                    if dim_value.startswith('MDS'):
+                        result['mds'][dim_value] = value
+                elif qid in ('oss_net', 'oss_dtu'):
+                    if not dim_value.startswith('OSS'):
+                        continue
+                    entry = result['oss'].setdefault(dim_value, {})
+                    entry['network_throughput_util' if qid == 'oss_net' else 'disk_throughput_util'] = value
+                elif qid in ('ost_iops', 'ost_cap'):
+                    if not dim_value.startswith('OST'):
+                        continue
+                    entry = result['ost'].setdefault(dim_value, {})
+                    entry['disk_iops_util' if qid == 'ost_iops' else 'storage_capacity_util'] = value
+        except Exception as e:
+            logger.warning(f"Failed to get Lustre per-server metrics for {fs_id}: {e}")
+
+        return result
     
+    def _build_perf_queries(self, fs_id: str, fs_type: FileSystemType
+                            ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+        """Return (queries, id->PerfMetrics-attr map) for perf utilization.
+
+        Returned queries are safe to append to the standard FS-metrics
+        ``GetMetricData`` request so both sets of data arrive in one call.
+        """
+        attr_map = {
+            'net': 'network_throughput_util',
+            'dtu': 'disk_throughput_util',
+            'dtb': 'disk_throughput_burst_balance',
+            'diu': 'disk_iops_util',
+            'dib': 'disk_iops_burst_balance',
+            'chr': 'cache_hit_ratio',
+            'ssd': 'ssd_iops_util',
+        }
+
+        def _ms(qid: str, name: str, dims: List[Dict[str, str]], stat: str = 'Average',
+                period: int = 60) -> Dict[str, Any]:
+            return {
+                'Id': qid,
+                'MetricStat': {
+                    'Metric': {'Namespace': 'AWS/FSx', 'MetricName': name, 'Dimensions': dims},
+                    'Period': period,
+                    'Stat': stat,
+                },
+                'ReturnData': True,
+            }
+
+        dim = [{'Name': 'FileSystemId', 'Value': fs_id}]
+        queries: List[Dict[str, Any]] = []
+
+        if fs_type in (FileSystemType.ONTAP, FileSystemType.OPENZFS, FileSystemType.WINDOWS):
+            queries += [
+                _ms('net', 'NetworkThroughputUtilization', dim),
+                _ms('dtu', 'FileServerDiskThroughputUtilization', dim),
+                _ms('dtb', 'FileServerDiskThroughputBalance', dim, stat='Minimum', period=300),
+                _ms('diu', 'FileServerDiskIopsUtilization', dim),
+                _ms('dib', 'FileServerDiskIopsBalance', dim, stat='Minimum', period=300),
+                _ms('ssd', 'DiskIopsUtilization', dim),
+            ]
+            if fs_type in (FileSystemType.ONTAP, FileSystemType.OPENZFS):
+                queries.append(_ms('chr', 'FileServerCacheHitRatio', dim))
+        elif fs_type == FileSystemType.LUSTRE:
+            # Per-OSS/OST metrics averaged server-side via SEARCH — the
+            # per-server breakdown is fetched separately by
+            # get_lustre_per_server_metrics for display in the OSS/OST tables.
+            queries += [
+                {
+                    'Id': 'net',
+                    'Expression': (
+                        f"AVG(SEARCH('{{AWS/FSx,FileSystemId,FileServer}} "
+                        f"MetricName=\"NetworkThroughputUtilization\" FileSystemId=\"{fs_id}\"', 'Average', 60))"
+                    ),
+                    'Period': 60,
+                },
+                {
+                    'Id': 'dtu',
+                    'Expression': (
+                        f"AVG(SEARCH('{{AWS/FSx,FileSystemId,FileServer}} "
+                        f"MetricName=\"FileServerDiskThroughputUtilization\" FileSystemId=\"{fs_id}\"', 'Average', 60))"
+                    ),
+                    'Period': 60,
+                },
+                {
+                    'Id': 'ssd',
+                    'Expression': (
+                        f"AVG(SEARCH('{{AWS/FSx,FileSystemId,StorageTargetId}} "
+                        f"MetricName=\"DiskIopsUtilization\" FileSystemId=\"{fs_id}\"', 'Average', 60))"
+                    ),
+                    'Period': 60,
+                },
+            ]
+        return queries, attr_map
+
+    def _build_latency_queries(self, fs_id: str, fs_type: FileSystemType
+                               ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+        """Return (queries, id->LatencyMetrics-attr map) for average latency.
+
+        Latency = OperationTime * 1000 / Operations (CloudWatch does the
+        division server-side via a math expression). Lustre does not publish
+        DataRead/Write/MetadataOperationTime — we emit no queries for it.
+        Windows lacks MetadataOperationTime.
+        """
+        attr_map: Dict[str, str] = {}
+        if fs_type == FileSystemType.LUSTRE:
+            return [], attr_map
+
+        dim = [{'Name': 'FileSystemId', 'Value': fs_id}]
+        namespace = 'AWS/FSx'
+        queries: List[Dict[str, Any]] = []
+
+        def _add(pair_id: str, ops_name: str, time_name: str, attr: str) -> None:
+            # Sum of operations and Sum of operation-time over Period=60;
+            # dividing gives average ms per op for that minute. ReturnData
+            # disabled on the inputs so only the derived value comes back.
+            queries.append({
+                'Id': f'{pair_id}_ops',
+                'MetricStat': {
+                    'Metric': {'Namespace': namespace, 'MetricName': ops_name, 'Dimensions': dim},
+                    'Period': 60, 'Stat': 'Sum',
+                },
+                'ReturnData': False,
+            })
+            queries.append({
+                'Id': f'{pair_id}_time',
+                'MetricStat': {
+                    'Metric': {'Namespace': namespace, 'MetricName': time_name, 'Dimensions': dim},
+                    'Period': 60, 'Stat': 'Sum',
+                },
+                'ReturnData': False,
+            })
+            queries.append({
+                'Id': pair_id,
+                'Expression': f'({pair_id}_time * 1000) / {pair_id}_ops',
+                'Period': 60,
+                'ReturnData': True,
+            })
+            attr_map[pair_id] = attr
+
+        _add('lat_read', 'DataReadOperations', 'DataReadOperationTime', 'read_ms')
+        _add('lat_write', 'DataWriteOperations', 'DataWriteOperationTime', 'write_ms')
+        # MetadataOperationTime is ONTAP + OpenZFS only (not Windows).
+        if fs_type in (FileSystemType.ONTAP, FileSystemType.OPENZFS):
+            _add('lat_meta', 'MetadataOperations', 'MetadataOperationTime', 'metadata_ms')
+
+        return queries, attr_map
+
+    def get_performance_metrics(self, fs_id: str, fs_type: FileSystemType) -> PerfMetrics:
+        """Fetch file-server performance utilization metrics.
+
+        Thin wrapper around ``get_file_system_metrics``; the perf queries now
+        share a single GetMetricData request with the core FS metrics.
+        """
+        metrics = self.get_file_system_metrics(fs_id, fs_type)
+        return metrics.perf_metrics or PerfMetrics()
+
     def _build_metric_queries(self, fs_id: str, fs_type: FileSystemType) -> List[Dict[str, Any]]:
         """Build CloudWatch metric queries based on file system type."""
         namespace = 'AWS/FSx'

@@ -6,7 +6,7 @@ import time
 from typing import Optional, Callable, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .model import Store, FileSystem, FileSystemType, DetailStore, Volume, MetadataServer
+from .model import Store, FileSystem, FileSystemType, DetailStore, Volume, MetadataServer, ObjectStorageServer, ObjectStorageTarget
 from .aws_client import FSxClient, CloudWatchClient, StaticPricingProvider
 
 logger = logging.getLogger(__name__)
@@ -354,7 +354,10 @@ class DetailController:
             FileSystem if found, None otherwise
         """
         try:
-            return self._fsx_client.get_file_system(self._file_system_id)
+            fs = self._fsx_client.get_file_system(self._file_system_id)
+            if fs is not None and fs.subnet_ids and not fs.availability_zones:
+                fs.availability_zones = self._fsx_client.resolve_azs(fs.subnet_ids)
+            return fs
         except Exception as e:
             logger.warning(f"Failed to fetch file system {self._file_system_id}: {e}")
         return None
@@ -375,6 +378,10 @@ class DetailController:
                     fs.cpu_utilization = existing.cpu_utilization
                     fs.hourly_price = existing.hourly_price
                     fs.pricing_breakdown = existing.pricing_breakdown
+                    fs.perf_metrics = existing.perf_metrics
+                    fs.latency_metrics = existing.latency_metrics
+                    if not fs.availability_zones and existing.availability_zones:
+                        fs.availability_zones = existing.availability_zones
                 
                 self._store.set_file_system(fs)
                 
@@ -421,12 +428,18 @@ class DetailController:
                 free_gib = -metrics.used_capacity
                 metrics.used_capacity = max(0, fs.storage_capacity - free_gib)
             fs.update_metrics(metrics)
-            
+            # Performance metrics arrive in the same GetMetricData response.
+            if metrics.perf_metrics is not None:
+                fs.perf_metrics = metrics.perf_metrics
+            # Latency metrics likewise share the request.
+            if metrics.latency_metrics is not None:
+                fs.latency_metrics = metrics.latency_metrics
+
             # Recalculate pricing (capacity pool usage may have changed)
             price = self._pricing.file_system_price(fs)
             if price is not None:
                 fs.set_price(price)
-            
+
             self._notify_update()
         except Exception as e:
             logger.warning(f"Failed to refresh file system metrics: {e}")
@@ -490,37 +503,35 @@ class DetailController:
         self._notify_update()
     
     def refresh_mds_metrics(self) -> None:
-        """Discover MDS servers and fetch CPU for each."""
+        """Fetch per-MDS, per-OSS, and per-OST metrics for Lustre file systems.
+
+        Uses a single GetMetricData with SEARCH expressions — no per-server
+        dimension discovery is required.
+        """
         fs = self._store.get_file_system()
-        if fs is None:
+        if fs is None or fs.type != FileSystemType.LUSTRE:
             return
-        
-        if fs.type != FileSystemType.LUSTRE:
-            return
-        
+
         try:
-            # Use cached MDS list if available, otherwise discover
-            if self._mds_cache is None:
-                self._mds_cache = self._cw_client.get_lustre_mds_list(self._file_system_id)
-            
-            mds_ids = self._mds_cache
-            if not mds_ids:
-                return
-            
-            # Fetch all MDS CPU metrics in a single batched API call
-            cpu_metrics = self._cw_client.get_lustre_mds_cpu_batch(
-                self._file_system_id, mds_ids
-            )
-            
-            # Update store with results
-            for mds_id, cpu in cpu_metrics.items():
-                mds = MetadataServer(
-                    id=mds_id,
-                    file_system_id=self._file_system_id,
-                    cpu_utilization=cpu,
-                )
-                self._store.add_mds(mds)
-            
+            per_server = self._cw_client.get_lustre_per_server_metrics(self._file_system_id)
+
+            for mds_id, cpu in per_server.get('mds', {}).items():
+                self._store.add_mds(MetadataServer(
+                    id=mds_id, file_system_id=self._file_system_id, cpu_utilization=cpu,
+                ))
+            for oss_id, fields in per_server.get('oss', {}).items():
+                self._store.add_oss(ObjectStorageServer(
+                    id=oss_id, file_system_id=self._file_system_id,
+                    network_throughput_util=fields.get('network_throughput_util', 0.0),
+                    disk_throughput_util=fields.get('disk_throughput_util', 0.0),
+                ))
+            for ost_id, fields in per_server.get('ost', {}).items():
+                self._store.add_ost(ObjectStorageTarget(
+                    id=ost_id, file_system_id=self._file_system_id,
+                    disk_iops_util=fields.get('disk_iops_util'),
+                    storage_capacity_util=fields.get('storage_capacity_util', 0.0),
+                ))
+
             self._notify_update()
         except Exception as e:
-            logger.warning(f"Failed to refresh MDS metrics: {e}")
+            logger.warning(f"Failed to refresh Lustre per-server metrics: {e}")
