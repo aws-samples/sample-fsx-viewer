@@ -100,6 +100,7 @@ class FileSystem:
     subnet_ids: List[str] = field(default_factory=list)
     preferred_subnet_id: Optional[str] = None  # Multi-AZ only
     availability_zones: List[str] = field(default_factory=list)  # Resolved lazily
+    management_ip: Optional[str] = None  # ONTAP management endpoint IP (for SSH)
     
     # Metrics
     used_capacity: int = 0
@@ -210,6 +211,20 @@ class Volume:
     read_throughput: float = 0.0   # MiB/s
     write_throughput: float = 0.0  # MiB/s
     access_points: List[AccessPoint] = field(default_factory=list)
+
+    # ONTAP-only per-volume metrics (CloudWatch). Left at defaults for OpenZFS.
+    metadata_iops: float = 0.0
+    capacity_pool_read_iops: float = 0.0
+    capacity_pool_write_iops: float = 0.0
+    files_used: int = 0
+    files_capacity: int = 0
+    latency_metrics: Optional['LatencyMetrics'] = None
+
+    def inode_utilization(self) -> float:
+        """Return inode utilization (0.0-1.0). 0 when capacity unknown."""
+        if self.files_capacity <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.files_used / self.files_capacity))
     
     def utilization(self) -> float:
         """Return storage utilization as 0.0-1.0."""
@@ -332,6 +347,9 @@ class Store:
                 existing.storage_type = fs.storage_type
                 existing.throughput_capacity = fs.throughput_capacity
                 existing.provisioned_iops = fs.provisioned_iops
+                # Refresh management_ip so SSH always targets the current endpoint.
+                if fs.management_ip:
+                    existing.management_ip = fs.management_ip
                 return existing
             self._file_systems[fs.id] = fs
             return fs

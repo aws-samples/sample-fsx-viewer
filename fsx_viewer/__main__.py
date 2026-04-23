@@ -139,6 +139,65 @@ def _leave_alt_screen(entered: bool) -> None:
         sys.stdout.flush()
 
 
+# Remember the last-used Instance Connect Endpoint ID for the session so the
+# user doesn't have to retype it for every SSH.
+_last_eice_id: str | None = None
+
+
+def _ssh_to_fsx(fs_id: str, management_ip: str, entered_alt: bool) -> None:
+    """Stay in the alt-screen but clear it, prompt for an Instance Connect
+    Endpoint ID, and SSH to the FSx ONTAP management endpoint via
+    ec2-instance-connect.
+
+    Returns when the SSH session exits. We deliberately do *not* leave the
+    alt-screen, so the user's original shell is never exposed and the SSH
+    prompt plus session run on a clean screen. On return, we clear the
+    alt-screen again so the caller's next render starts fresh.
+    """
+    global _last_eice_id
+    import re
+    import subprocess
+
+    def _clear() -> None:
+        if _vt_enabled:
+            sys.stdout.write('\033[2J\033[H')
+            sys.stdout.flush()
+        elif sys.platform == 'win32':
+            import os as _os; _os.system('cls')
+
+    _clear()
+    try:
+        print(f"SSH to {fs_id} (management endpoint {management_ip})\n")
+        default_suffix = f" [{_last_eice_id}]" if _last_eice_id else ""
+        raw = input(f"Instance Connect Endpoint ID (eice-...){default_suffix}: ").strip()
+        eice_id = raw or (_last_eice_id or "")
+        if not re.fullmatch(r"eice-[0-9a-f]+", eice_id):
+            print(f"Invalid Instance Connect Endpoint ID: {eice_id!r}")
+            input("Press Enter to return to fsx-viewer...")
+            return
+        _last_eice_id = eice_id
+
+        proxy = (
+            f"aws ec2-instance-connect open-tunnel "
+            f"--instance-connect-endpoint-id {eice_id} "
+            f"--private-ip-address {management_ip}"
+        )
+        cmd = [
+            "ssh",
+            f"fsxadmin@{management_ip}",
+            "-o", f"ProxyCommand={proxy}",
+        ]
+        print(f"\n$ {' '.join(cmd)}\n", flush=True)
+        try:
+            subprocess.call(cmd)
+        except FileNotFoundError:
+            print("Error: 'ssh' is not on PATH. Install OpenSSH and try again.")
+            input("Press Enter to return to fsx-viewer...")
+    finally:
+        # Clear the alt-screen again so the caller's next TUI render is clean.
+        _clear()
+
+
 def _run_summary_mode(
     config: Config,
     fsx_client: FSxClient,
@@ -193,6 +252,15 @@ def _run_summary_mode(
                 return 0
             finally:
                 controller.stop()
+
+            # Check if user pressed 'c' to SSH to an ONTAP file system.
+            ssh_fs_id = ui.get_ssh_fs_id()
+            if ssh_fs_id:
+                fs_obj = store.get(ssh_fs_id)
+                if fs_obj is not None and fs_obj.management_ip:
+                    _ssh_to_fsx(fs_obj.id, fs_obj.management_ip, entered_alt)
+                # Loop again to re-render a fresh summary view.
+                continue
 
             # Check if user selected a file system to view details
             selected_fs_id = ui.get_selected_fs_id()

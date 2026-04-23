@@ -197,6 +197,7 @@ Press `Enter` on a file system to view its details.
 | `j` or `↓` | Move selection down |
 | `k` or `↑` | Move selection up |
 | `Enter` | View details for selected file system |
+| `c` | SSH to selected FSx for ONTAP file system via EC2 Instance Connect |
 | `h` or `←` | Previous page |
 | `l` or `→` | Next page |
 | `q` | Quit |

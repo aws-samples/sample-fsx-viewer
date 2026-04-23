@@ -211,6 +211,7 @@ class UI:
         self._running = False
         self._sort_key, self._sort_reverse = make_sorter(sort)
         self._selected_fs_id: Optional[str] = None  # Set when user presses Enter
+        self._ssh_fs_id: Optional[str] = None  # Set when user presses 'c' on an ONTAP FS
         self._region = region
     
     def _get_sorted_file_systems(self, stats: Stats) -> List[FileSystem]:
@@ -254,7 +255,11 @@ class UI:
     def get_selected_fs_id(self) -> Optional[str]:
         """Get the file system ID that was selected (after Enter pressed)."""
         return self._selected_fs_id
-    
+
+    def get_ssh_fs_id(self) -> Optional[str]:
+        """Get the file system ID that was chosen for SSH (after 'c' pressed)."""
+        return self._ssh_fs_id
+
     def _get_current_selection(self) -> Optional[FileSystem]:
         """Get the currently highlighted file system."""
         stats = self._store.stats()
@@ -435,6 +440,9 @@ class UI:
         help_text.append("Enter", style="bold white")
         help_text.append(": details", style="dim")
         help_text.append(" • ", style="dim")
+        help_text.append("c", style="bold white")
+        help_text.append(": ssh (ONTAP)", style="dim")
+        help_text.append(" • ", style="dim")
         help_text.append("h/l", style="bold white")
         help_text.append(": page", style="dim")
         help_text.append(" • ", style="dim")
@@ -523,6 +531,11 @@ class UI:
                                 if selected:
                                     self._selected_fs_id = selected.id
                                     self._running = False; break
+                            elif key == 'c':
+                                selected = self._get_current_selection()
+                                if selected and selected.type == FileSystemType.ONTAP and selected.management_ip:
+                                    self._ssh_fs_id = selected.id
+                                    self._running = False; break
                             elif key == 'l':  self.next_page(); self._selected_index = 0; dirty = True
                             elif key == 'h':  self.prev_page(); self._selected_index = 0; dirty = True
                         else:
@@ -602,6 +615,13 @@ class UI:
                                 elif ch == 'k':  self.select_prev(); dirty = True
                                 elif ch == 'l':  self.next_page(); self._selected_index = 0; dirty = True
                                 elif ch == 'h':  self.prev_page(); self._selected_index = 0; dirty = True
+                                elif ch == 'c':
+                                    selected = self._get_current_selection()
+                                    if selected and selected.type == FileSystemType.ONTAP and selected.management_ip:
+                                        self._ssh_fs_id = selected.id
+                                        self._running = False
+                                        stop = True
+                                        break
                                 elif ch in ('\r', '\n'):
                                     selected = self._get_current_selection()
                                     if selected:
@@ -752,7 +772,13 @@ class DetailUI:
         self._current_page = 0
 
     def _render_volume_detail(self) -> Panel:
-        """Render the drilled-down volume view showing S3 access points."""
+        """Render the drilled-down volume view.
+
+        For ONTAP volumes, shows a 60/40 panel (volume stats on the left,
+        latency on the right) followed by the S3 access-points table below.
+        For OpenZFS volumes, keeps the original compact layout (header +
+        access-points) since no extra per-volume metrics are published.
+        """
         fs = self._store.get_file_system()
         vol = None
         for v in self._store.get_volumes():
@@ -769,26 +795,146 @@ class DetailUI:
         header.append(f"Type: {vol.type}   ")
         header.append(f"Capacity: {vol.used_capacity}/{vol.storage_capacity} GiB\n")
 
-        # AP table
-        table = Table(show_header=True, header_style="bold", border_style="dim", expand=True)
-        table.add_column("Name", style="cyan", no_wrap=True)
-        table.add_column("Alias")
-        table.add_column("Lifecycle", width=12)
-        table.add_column("VPC", width=24)
+        # AP table (used by both branches).
+        ap_table = Table(show_header=True, header_style="bold", border_style="dim", expand=True)
+        ap_table.add_column("Name", style="cyan", no_wrap=True)
+        ap_table.add_column("Alias")
+        ap_table.add_column("Lifecycle", width=12)
+        ap_table.add_column("VPC", width=24)
 
         aps = vol.access_points
+        total_pages = self._get_page_count(len(aps)) if aps else 1
         if not aps:
-            table.add_row("-", "no S3 access points", "", "")
+            ap_table.add_row("-", "no S3 access points", "", "")
         else:
-            total_pages = self._get_page_count(len(aps))
             page = self._get_page_items(aps)
             for ap in page:
-                table.add_row(ap.name or "-", ap.alias or "-", ap.lifecycle or "-", ap.vpc_id or "Internet")
+                ap_table.add_row(ap.name or "-", ap.alias or "-", ap.lifecycle or "-", ap.vpc_id or "Internet")
             header.append(f"\nPage {self._current_page + 1}/{total_pages}  ({len(aps)} access point{'s' if len(aps) != 1 else ''})\n", style="dim")
 
         help_text = Text("\n[h/l] page  [q/Esc] back to volume list", style="dim")
 
-        return Panel(Group(header, table, help_text), title=f"{fs.name} / {vol.id}", border_style="cyan")
+        # OpenZFS: keep the original compact layout (no extra volume metrics published).
+        if vol.type != 'ONTAP':
+            return Panel(Group(header, ap_table, help_text),
+                         title=f"{fs.name} / {vol.id}", border_style="cyan")
+
+        # ONTAP: build the perf + latency panel in a 60/40 grid, then AP table below.
+        perf_table = self._render_volume_perf_panel(vol)
+        latency_table = self._render_volume_latency_table(vol)
+
+        if perf_table is not None and latency_table is not None:
+            grid = Table.grid(expand=True, padding=(0, 1))
+            grid.add_column(ratio=3)  # 60%
+            grid.add_column(ratio=2)  # 40%
+            grid.add_row(perf_table, latency_table)
+            top = grid
+        elif perf_table is not None:
+            top = perf_table
+        elif latency_table is not None:
+            top = latency_table
+        else:
+            top = Text("")
+
+        return Panel(
+            Group(header, Text(""), top, Text(""), ap_table, help_text),
+            title=f"{fs.name} / {vol.id}",
+            border_style="cyan",
+        )
+
+    def _render_volume_perf_panel(self, vol: Volume) -> Optional[Table]:
+        """Compact per-volume stats table (ONTAP only).
+
+        Contents: capacity bar, inode bar, R/W IOPS, metadata IOPS, R/W
+        throughput, capacity-pool ops.
+        """
+        t = Table(
+            title="Volume stats",
+            title_style="bold dim",
+            title_justify="left",
+            show_header=False,
+            border_style="dim",
+            expand=True,
+            padding=(0, 1),
+        )
+        t.add_column("Metric", style="dim", min_width=22)
+        t.add_column("Value", min_width=30)
+
+        # Capacity bar.
+        if vol.storage_capacity > 0:
+            cap_frac = vol.utilization()
+            cap_cell = Text()
+            cap_cell.append_text(self._render_progress_bar(cap_frac, width=30, gradient=True))
+            cap_cell.append(f" {vol.used_capacity}/{vol.storage_capacity} GiB ({cap_frac*100:.1f}%)")
+            t.add_row("Capacity", cap_cell)
+        else:
+            t.add_row("Capacity", Text(f"{vol.used_capacity} GiB", style="dim"))
+
+        # Inode utilisation.
+        if vol.files_capacity > 0:
+            inode_frac = vol.inode_utilization()
+            inode_cell = Text()
+            inode_cell.append_text(self._render_progress_bar(inode_frac, width=30, gradient=True))
+            inode_cell.append(f" {vol.files_used:,}/{vol.files_capacity:,} ({inode_frac*100:.1f}%)")
+            t.add_row("Inode utilization", inode_cell)
+        else:
+            t.add_row("Inode utilization", Text("—", style="dim"))
+
+        # Client IOPS (read / write / metadata).
+        def _num(v: float, fmt: str = "{:.0f}") -> Text:
+            if v <= 0:
+                return Text("—", style="dim")
+            return Text(fmt.format(v), style="bold bright_white")
+
+        t.add_row("Read IOPS", _num(vol.read_iops))
+        t.add_row("Write IOPS", _num(vol.write_iops))
+        t.add_row("Metadata IOPS", _num(vol.metadata_iops))
+
+        # Throughput (MiB/s).
+        t.add_row("Read throughput", _num(vol.read_throughput, "{:.1f} MiB/s"))
+        t.add_row("Write throughput", _num(vol.write_throughput, "{:.1f} MiB/s"))
+
+        # Capacity pool tiering ops.
+        cp_read_cell = _num(vol.capacity_pool_read_iops)
+        cp_write_cell = _num(vol.capacity_pool_write_iops)
+        t.add_row("Capacity pool read ops/s", cp_read_cell)
+        t.add_row("Capacity pool write ops/s", cp_write_cell)
+
+        return t
+
+    def _render_volume_latency_table(self, vol: Volume) -> Optional[Table]:
+        """Per-volume latency table (ONTAP only). Same styling as the FS-level panel."""
+        lat = vol.latency_metrics or LatencyMetrics()
+        t = Table(
+            title="Latency (avg ms/op)",
+            title_style="bold dim",
+            title_justify="left",
+            show_header=False,
+            border_style="dim",
+            expand=True,
+            padding=(0, 1),
+        )
+        t.add_column("Op", style="dim", min_width=10)
+        t.add_column("Value", justify="right")
+
+        def color(ms: Optional[float]) -> str:
+            if ms is None:
+                return "dim"
+            if ms > 10:
+                return "bold red"
+            if ms > 2:
+                return "bold yellow"
+            return "bold bright_white"
+
+        def cell(ms: Optional[float]) -> Text:
+            if ms is None:
+                return Text("—", style="dim")
+            return Text(f"{ms:.2f} ms", style=color(ms))
+
+        t.add_row("Read", cell(lat.read_ms))
+        t.add_row("Write", cell(lat.write_ms))
+        t.add_row("Metadata", cell(lat.metadata_ms))
+        return t
     
     def _render_perf_panel(self, fs: FileSystem) -> List[Table]:
         """Render performance utilization as a single combined table.

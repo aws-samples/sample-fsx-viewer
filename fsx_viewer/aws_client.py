@@ -98,8 +98,15 @@ class FSxClient:
 
         # HA pairs (ONTAP only) and subnet placement (all types)
         ha_pairs = 1
+        management_ip = None
         if fs_type_enum == FileSystemType.ONTAP:
-            ha_pairs = fs.get('OntapConfiguration', {}).get('HAPairs', 1) or 1
+            ontap_config = fs.get('OntapConfiguration', {})
+            ha_pairs = ontap_config.get('HAPairs', 1) or 1
+            # Management endpoint IP for SSH (first IP if multiple).
+            mgmt = (ontap_config.get('Endpoints') or {}).get('Management') or {}
+            ips = mgmt.get('IpAddresses') or []
+            if ips:
+                management_ip = ips[0]
 
         return FileSystem(
             id=fs_id,
@@ -115,6 +122,7 @@ class FSxClient:
             ha_pairs=ha_pairs,
             subnet_ids=list(fs.get('SubnetIds', []) or []),
             preferred_subnet_id=fs.get('PreferredSubnetId') or None,
+            management_ip=management_ip,
         )
     
     def _extract_pricing_config(self, fs: dict, fs_type: FileSystemType) -> tuple:
@@ -760,152 +768,213 @@ class CloudWatchClient:
         
         return result
     
-    def get_volume_metrics_batch(self, fs_id: str, volume_ids: List[str]) -> Dict[str, Dict[str, float]]:
-        """Get CloudWatch metrics for multiple volumes in a single API call.
-        
-        This is more efficient than calling get_volume_metrics for each volume.
-        CloudWatch allows up to 500 metric queries per request.
-        
+    def get_volume_metrics_batch(self, fs_id: str, volume_ids: List[str],
+                                 volume_types: Optional[Dict[str, str]] = None
+                                 ) -> Dict[str, Dict[str, float]]:
+        """Get CloudWatch metrics for multiple volumes.
+
+        Issues one or more GetMetricData calls (chunked to stay under
+        CloudWatch's 500-queries-per-request limit). ONTAP volumes receive an
+        additional set of queries (latency math expressions, capacity-pool
+        IOPS, inode counts); OpenZFS volumes use the original 7-query set.
+
         Args:
             fs_id: The FSx file system ID (fs-xxx)
             volume_ids: List of volume IDs (fsvol-xxx)
-            
+            volume_types: Optional map of volume_id -> "ONTAP" | "OPENZFS". When
+                omitted, all volumes are treated as OpenZFS (7-query path) to
+                preserve prior behaviour.
+
         Returns:
-            Dict mapping volume_id to metrics dict with keys:
-            read_throughput, write_throughput, read_iops, write_iops, used_capacity, storage_capacity
+            Dict mapping volume_id to metrics dict. OpenZFS entries populate
+            read_throughput, write_throughput, read_iops, write_iops,
+            used_capacity, storage_capacity. ONTAP entries additionally
+            populate metadata_iops, capacity_pool_read_iops,
+            capacity_pool_write_iops, files_used, files_capacity, and a
+            nested 'latency' dict with read_ms, write_ms, metadata_ms.
         """
-        # Initialize results with zeros
-        results = {
-            vol_id: {
+        volume_types = volume_types or {}
+
+        def _empty(vol_id: str) -> Dict[str, Any]:
+            entry: Dict[str, Any] = {
                 'read_throughput': 0.0,
                 'write_throughput': 0.0,
                 'read_iops': 0.0,
                 'write_iops': 0.0,
                 'used_capacity': 0,
-                'storage_capacity': 0,  # From CloudWatch for ONTAP
+                'storage_capacity': 0,
             }
-            for vol_id in volume_ids
-        }
-        
+            if volume_types.get(vol_id) == 'ONTAP':
+                entry.update({
+                    'metadata_iops': 0.0,
+                    'capacity_pool_read_iops': 0.0,
+                    'capacity_pool_write_iops': 0.0,
+                    'files_used': 0,
+                    'files_capacity': 0,
+                    'latency': {'read_ms': None, 'write_ms': None, 'metadata_ms': None},
+                })
+            return entry
+
+        results: Dict[str, Dict[str, Any]] = {vol_id: _empty(vol_id) for vol_id in volume_ids}
         if not volume_ids:
             return results
-        
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(minutes=5)
-        namespace = 'AWS/FSx'
-        
-        # Build queries for all volumes (7 metrics per volume, max 500 total)
-        # ONTAP: StorageUsed + StorageCapacity (with StorageTier dimension)
-        # OpenZFS: UsedStorageCapacity
-        queries = []
-        max_volumes = min(len(volume_ids), 71)  # 7 metrics * 71 = 497 queries max
-        
-        for i, vol_id in enumerate(volume_ids[:max_volumes]):
+
+        # Query budget: OpenZFS=7, ONTAP=18 (7 base + 8 extra metrics + 3 math).
+        # Chunk volumes so each call stays under 500 queries.
+        def _queries_for_volume(index: int, vol_id: str) -> List[Dict[str, Any]]:
             dimensions = [
                 {'Name': 'FileSystemId', 'Value': fs_id},
                 {'Name': 'VolumeId', 'Value': vol_id},
             ]
-            
-            queries.extend([
-                {
-                    'Id': f'rb_{i}',
-                    'MetricStat': {
-                        'Metric': {'Namespace': namespace, 'MetricName': 'DataReadBytes', 'Dimensions': dimensions},
-                        'Period': 60, 'Stat': 'Sum',
-                    },
-                    'Label': f'{vol_id}|read_bytes',
-                },
-                {
-                    'Id': f'wb_{i}',
-                    'MetricStat': {
-                        'Metric': {'Namespace': namespace, 'MetricName': 'DataWriteBytes', 'Dimensions': dimensions},
-                        'Period': 60, 'Stat': 'Sum',
-                    },
-                    'Label': f'{vol_id}|write_bytes',
-                },
-                {
-                    'Id': f'ro_{i}',
-                    'MetricStat': {
-                        'Metric': {'Namespace': namespace, 'MetricName': 'DataReadOperations', 'Dimensions': dimensions},
-                        'Period': 60, 'Stat': 'Sum',
-                    },
-                    'Label': f'{vol_id}|read_ops',
-                },
-                {
-                    'Id': f'wo_{i}',
-                    'MetricStat': {
-                        'Metric': {'Namespace': namespace, 'MetricName': 'DataWriteOperations', 'Dimensions': dimensions},
-                        'Period': 60, 'Stat': 'Sum',
-                    },
-                    'Label': f'{vol_id}|write_ops',
-                },
-                {
-                    'Id': f'su_{i}',
-                    'MetricStat': {
-                        'Metric': {'Namespace': namespace, 'MetricName': 'StorageUsed', 'Dimensions': dimensions},
-                        'Period': 60, 'Stat': 'Average',
-                    },
-                    'Label': f'{vol_id}|storage_used',
-                },
-                {
-                    'Id': f'sc_{i}',
-                    'MetricStat': {
-                        'Metric': {'Namespace': namespace, 'MetricName': 'StorageCapacity', 'Dimensions': dimensions},
-                        'Period': 60, 'Stat': 'Average',
-                    },
-                    'Label': f'{vol_id}|storage_capacity',
-                },
-                {
-                    'Id': f'usc_{i}',
-                    'MetricStat': {
-                        'Metric': {'Namespace': namespace, 'MetricName': 'UsedStorageCapacity', 'Dimensions': dimensions},
-                        'Period': 60, 'Stat': 'Average',
-                    },
-                    'Label': f'{vol_id}|used_storage_openzfs',
-                },
-            ])
-        
-        try:
-            response = self._client.get_metric_data(
-                MetricDataQueries=queries,
-                StartTime=start_time,
-                EndTime=end_time,
-            )
-            
+            namespace = 'AWS/FSx'
+            # Base 7 metrics (existing behaviour).
+            qs = [
+                {'Id': f'rb_{index}', 'Label': f'{vol_id}|read_bytes',
+                 'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'DataReadBytes', 'Dimensions': dimensions},
+                                'Period': 60, 'Stat': 'Sum'}},
+                {'Id': f'wb_{index}', 'Label': f'{vol_id}|write_bytes',
+                 'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'DataWriteBytes', 'Dimensions': dimensions},
+                                'Period': 60, 'Stat': 'Sum'}},
+                {'Id': f'ro_{index}', 'Label': f'{vol_id}|read_ops',
+                 'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'DataReadOperations', 'Dimensions': dimensions},
+                                'Period': 60, 'Stat': 'Sum'}},
+                {'Id': f'wo_{index}', 'Label': f'{vol_id}|write_ops',
+                 'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'DataWriteOperations', 'Dimensions': dimensions},
+                                'Period': 60, 'Stat': 'Sum'}},
+                {'Id': f'su_{index}', 'Label': f'{vol_id}|storage_used',
+                 'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'StorageUsed', 'Dimensions': dimensions},
+                                'Period': 60, 'Stat': 'Average'}},
+                {'Id': f'sc_{index}', 'Label': f'{vol_id}|storage_capacity',
+                 'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'StorageCapacity', 'Dimensions': dimensions},
+                                'Period': 60, 'Stat': 'Average'}},
+                {'Id': f'usc_{index}', 'Label': f'{vol_id}|used_storage_openzfs',
+                 'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'UsedStorageCapacity', 'Dimensions': dimensions},
+                                'Period': 60, 'Stat': 'Average'}},
+            ]
+            # ONTAP-only extras: metadata ops, latency math, inodes, capacity pool.
+            if volume_types.get(vol_id) == 'ONTAP':
+                def _ms(qid: str, name: str, stat: str = 'Sum') -> Dict[str, Any]:
+                    return {
+                        'Id': qid,
+                        'Label': f'{vol_id}|{qid.split("_", 1)[0]}',  # we set Label explicitly below where needed
+                        'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': name, 'Dimensions': dimensions},
+                                       'Period': 60, 'Stat': stat},
+                        'ReturnData': False,
+                    }
+                # Denominator/numerator pairs for latency (ReturnData=False).
+                # Labels aren't strictly needed on ReturnData=False queries, but
+                # we keep them consistent for easier debugging.
+                qs.extend([
+                    _ms(f'mo_{index}', 'MetadataOperations'),
+                    _ms(f'rot_{index}', 'DataReadOperationTime'),
+                    _ms(f'wot_{index}', 'DataWriteOperationTime'),
+                    _ms(f'mot_{index}', 'MetadataOperationTime'),
+                ])
+                # Metadata ops returned separately for total-IOPS & stored as rate.
+                qs.append({
+                    'Id': f'moi_{index}', 'Label': f'{vol_id}|metadata_ops',
+                    'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'MetadataOperations', 'Dimensions': dimensions},
+                                   'Period': 60, 'Stat': 'Sum'},
+                })
+                # Latency math expressions (ms/op), server-side division.
+                qs.append({
+                    'Id': f'lr_{index}', 'Label': f'{vol_id}|lat_read',
+                    'Expression': f'(rot_{index} * 1000) / ro_{index}', 'Period': 60, 'ReturnData': True,
+                })
+                qs.append({
+                    'Id': f'lw_{index}', 'Label': f'{vol_id}|lat_write',
+                    'Expression': f'(wot_{index} * 1000) / wo_{index}', 'Period': 60, 'ReturnData': True,
+                })
+                qs.append({
+                    'Id': f'lm_{index}', 'Label': f'{vol_id}|lat_meta',
+                    'Expression': f'(mot_{index} * 1000) / mo_{index}', 'Period': 60, 'ReturnData': True,
+                })
+                # Capacity-pool tiering ops and inode counters.
+                qs.extend([
+                    {'Id': f'cpr_{index}', 'Label': f'{vol_id}|cp_read_ops',
+                     'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'CapacityPoolReadOperations', 'Dimensions': dimensions},
+                                    'Period': 60, 'Stat': 'Sum'}},
+                    {'Id': f'cpw_{index}', 'Label': f'{vol_id}|cp_write_ops',
+                     'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'CapacityPoolWriteOperations', 'Dimensions': dimensions},
+                                    'Period': 60, 'Stat': 'Sum'}},
+                    {'Id': f'fu_{index}', 'Label': f'{vol_id}|files_used',
+                     'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'FilesUsed', 'Dimensions': dimensions},
+                                    'Period': 60, 'Stat': 'Average'}},
+                    {'Id': f'fc_{index}', 'Label': f'{vol_id}|files_capacity',
+                     'MetricStat': {'Metric': {'Namespace': namespace, 'MetricName': 'FilesCapacity', 'Dimensions': dimensions},
+                                    'Period': 60, 'Stat': 'Average'}},
+                ])
+            return qs
+
+        # Build all queries and chunk into GetMetricData calls <=500 each.
+        per_vol_queries: List[List[Dict[str, Any]]] = []
+        for idx, vol_id in enumerate(volume_ids):
+            per_vol_queries.append(_queries_for_volume(idx, vol_id))
+
+        chunks: List[List[Dict[str, Any]]] = []
+        current: List[Dict[str, Any]] = []
+        for qs in per_vol_queries:
+            if len(current) + len(qs) > 500 and current:
+                chunks.append(current)
+                current = []
+            current.extend(qs)
+        if current:
+            chunks.append(current)
+
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(minutes=5)
+
+        for chunk in chunks:
+            try:
+                response = self._client.get_metric_data(
+                    MetricDataQueries=chunk,
+                    StartTime=start_time,
+                    EndTime=end_time,
+                    ScanBy='TimestampDescending',
+                )
+            except Exception as e:
+                logger.warning(f"Failed to get batch metrics for volumes: {e}")
+                continue
+
             for metric_result in response.get('MetricDataResults', []):
                 label = metric_result.get('Label', '')
                 values = metric_result.get('Values', [])
-                
                 if not label or not values or '|' not in label:
                     continue
-                
                 vol_id, metric_type = label.split('|', 1)
                 value = values[0]
-                
                 if vol_id not in results:
                     continue
-                
+                entry = results[vol_id]
                 if metric_type == 'read_bytes':
-                    results[vol_id]['read_throughput'] = value / (1024 * 1024) / 60
+                    entry['read_throughput'] = value / (1024 * 1024) / 60
                 elif metric_type == 'write_bytes':
-                    results[vol_id]['write_throughput'] = value / (1024 * 1024) / 60
+                    entry['write_throughput'] = value / (1024 * 1024) / 60
                 elif metric_type == 'read_ops':
-                    results[vol_id]['read_iops'] = value / 60
+                    entry['read_iops'] = value / 60
                 elif metric_type == 'write_ops':
-                    results[vol_id]['write_iops'] = value / 60
+                    entry['write_iops'] = value / 60
                 elif metric_type in ('storage_used', 'used_storage_openzfs'):
-                    # Used capacity in bytes -> GiB
                     used_gib = round(value / (1024 * 1024 * 1024))
-                    if used_gib > 0 or results[vol_id]['used_capacity'] == 0:
-                        results[vol_id]['used_capacity'] = used_gib
+                    if used_gib > 0 or entry['used_capacity'] == 0:
+                        entry['used_capacity'] = used_gib
                 elif metric_type == 'storage_capacity':
-                    # Volume capacity from CloudWatch (ONTAP StorageCapacity metric)
-                    capacity_gib = round(value / (1024 * 1024 * 1024))
-                    results[vol_id]['storage_capacity'] = capacity_gib
-                    
-        except Exception as e:
-            logger.warning(f"Failed to get batch metrics for volumes: {e}")
-        
+                    entry['storage_capacity'] = round(value / (1024 * 1024 * 1024))
+                elif metric_type == 'metadata_ops':
+                    entry['metadata_iops'] = value / 60
+                elif metric_type == 'cp_read_ops':
+                    entry['capacity_pool_read_iops'] = value / 60
+                elif metric_type == 'cp_write_ops':
+                    entry['capacity_pool_write_iops'] = value / 60
+                elif metric_type == 'files_used':
+                    entry['files_used'] = int(value)
+                elif metric_type == 'files_capacity':
+                    entry['files_capacity'] = int(value)
+                elif metric_type in ('lat_read', 'lat_write', 'lat_meta'):
+                    key = {'lat_read': 'read_ms', 'lat_write': 'write_ms', 'lat_meta': 'metadata_ms'}[metric_type]
+                    entry.setdefault('latency', {'read_ms': None, 'write_ms': None, 'metadata_ms': None})
+                    entry['latency'][key] = float(value)
+
         return results
     
     def get_lustre_mds_list(self, fs_id: str) -> List[str]:

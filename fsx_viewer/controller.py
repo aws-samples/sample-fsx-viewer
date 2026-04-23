@@ -6,7 +6,7 @@ import time
 from typing import Optional, Callable, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .model import Store, FileSystem, FileSystemType, DetailStore, Volume, MetadataServer, ObjectStorageServer, ObjectStorageTarget
+from .model import Store, FileSystem, FileSystemType, DetailStore, Volume, MetadataServer, ObjectStorageServer, ObjectStorageTarget, LatencyMetrics
 from .aws_client import FSxClient, CloudWatchClient, StaticPricingProvider
 
 logger = logging.getLogger(__name__)
@@ -478,12 +478,15 @@ class DetailController:
         fs = self._store.get_file_system()
         if fs is None:
             return
-        
-        # Fetch all metrics in one batched API call
+
+        # Tell the batch fetcher which volumes get the ONTAP extras.
+        volume_types = {vol.id: vol.type for vol in volumes}
+
+        # Fetch all metrics in one (or a few, if chunked) GetMetricData calls.
         metrics_batch = self._cw_client.get_volume_metrics_batch(
-            fs.id, volume_ids
+            fs.id, volume_ids, volume_types=volume_types,
         )
-        
+
         # Update each volume with its metrics
         for vol in volumes:
             if vol.id in metrics_batch:
@@ -497,9 +500,22 @@ class DetailController:
                 cw_capacity = metrics.get('storage_capacity', 0)
                 if cw_capacity > 0:
                     vol.storage_capacity = cw_capacity
-                # If both CW and API capacity are 0, volume might be newly created
+                # ONTAP per-volume extras (OpenZFS volumes simply leave these at defaults).
+                if vol.type == 'ONTAP':
+                    vol.metadata_iops = metrics.get('metadata_iops', 0.0)
+                    vol.capacity_pool_read_iops = metrics.get('capacity_pool_read_iops', 0.0)
+                    vol.capacity_pool_write_iops = metrics.get('capacity_pool_write_iops', 0.0)
+                    vol.files_used = metrics.get('files_used', 0)
+                    vol.files_capacity = metrics.get('files_capacity', 0)
+                    lat = metrics.get('latency') or {}
+                    if any(v is not None for v in lat.values()):
+                        vol.latency_metrics = LatencyMetrics(
+                            read_ms=lat.get('read_ms'),
+                            write_ms=lat.get('write_ms'),
+                            metadata_ms=lat.get('metadata_ms'),
+                        )
                 self._store.add_volume(vol)
-        
+
         self._notify_update()
     
     def refresh_mds_metrics(self) -> None:
