@@ -11,7 +11,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "hypothesis>=6.150.0",
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
 ]
 
 [project.scripts]
