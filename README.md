@@ -200,7 +200,7 @@ Press `Enter` on a file system to view its details.
 | `c` | SSH to selected FSx for ONTAP file system via EC2 Instance Connect |
 | `h` or `←` | Previous page |
 | `l` or `→` | Next page |
-| `q` | Quit |
+| `q` or `Esc` | Quit |
 
 ### Detail View
 
@@ -208,11 +208,11 @@ Press `Enter` on a file system to view its details.
 |-----|--------|
 | `j` or `↓` | Select next volume (ONTAP/OpenZFS) |
 | `k` or `↑` | Select previous volume (ONTAP/OpenZFS) |
-| `Enter` | Drill into selected volume's S3 access points |
+| `Enter` | Open volume details (ONTAP/OpenZFS) |
 | `h` or `←` | Previous page (volumes / MDS servers / APs) |
 | `l` or `→` | Next page |
-| `Esc` | Return to volume list (when in access-point drill-down) |
-| `q` | Return to summary view (or exit access-point drill-down) |
+| `Esc` | Return to volume list (when viewing volume details); otherwise quit |
+| `q` | Return to summary view (or exit volume details) |
 
 ## Configuration File
 

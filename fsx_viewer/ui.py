@@ -446,7 +446,7 @@ class UI:
         help_text.append("h/l", style="bold white")
         help_text.append(": page", style="dim")
         help_text.append(" • ", style="dim")
-        help_text.append("q", style="bold white")
+        help_text.append("q/Esc", style="bold white")
         help_text.append(": quit", style="dim")
         help_text.append(" (arrow keys also supported)", style="dim italic")
         return help_text
@@ -522,7 +522,7 @@ class UI:
                                 elif key2 == 'P':  self.select_next(); dirty = True
                                 elif key2 == 'K':  self.prev_page(); self._selected_index = 0; dirty = True
                                 elif key2 == 'M':  self.next_page(); self._selected_index = 0; dirty = True
-                            elif key == 'q' or key == '\x03':
+                            elif key == 'q' or key == '\x03' or key == '\x1b':
                                 self._running = False; break
                             elif key == 'j':  self.select_next(); dirty = True
                             elif key == 'k':  self.select_prev(); dirty = True
@@ -601,9 +601,12 @@ class UI:
                                                 buf += more
                                                 continue
                                     if _time.monotonic() - esc_started_at >= ESC_TIMEOUT:
+                                        # Bare Esc (no escape sequence) -> quit.
                                         buf = buf[1:]
                                         esc_started_at = None
-                                        continue
+                                        self._running = False
+                                        stop = True
+                                        break
                                     break
                                 ch = buf[0]
                                 buf = buf[1:]
@@ -1213,9 +1216,9 @@ class DetailUI:
         help_text.append(": select volume", style="dim")
         help_text.append(" • ", style="dim")
         help_text.append("Enter", style="bold white")
-        help_text.append(": S3 APs", style="dim")
+        help_text.append(": volume details", style="dim")
         help_text.append(" • ", style="dim")
-        help_text.append("q", style="bold white")
+        help_text.append("q/Esc", style="bold white")
         help_text.append(": quit", style="dim")
         help_text.append(" (arrow keys also supported)", style="dim italic")
         return help_text
@@ -1605,6 +1608,8 @@ class DetailUI:
                             elif key == '\x1b':  # Esc
                                 if self._volume_detail_mode:
                                     self.exit_volume_detail(); dirty = True
+                                else:
+                                    self._running = False; break
                             elif key == 'l':  self.next_page(); dirty = True
                             elif key == 'h':  self.prev_page(); dirty = True
                             elif key == 'j':  self.select_next_volume(); dirty = True
@@ -1644,6 +1649,8 @@ class DetailUI:
                             elif k == 'ESC':
                                 if self._volume_detail_mode:
                                     self.exit_volume_detail()
+                                else:
+                                    return True
                             elif k == 'q' or k == '\x03':
                                 if self._volume_detail_mode:
                                     self.exit_volume_detail()
