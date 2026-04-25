@@ -11,7 +11,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 
-from .model import Store, FileSystem, Stats, FileSystemType, DetailStore, Volume, MetadataServer, ObjectStorageServer, ObjectStorageTarget, LatencyMetrics
+from .model import Store, FileSystem, Stats, FileSystemType, DetailStore, Volume, MetadataServer, ObjectStorageServer, ObjectStorageTarget, MetadataTarget, LatencyMetrics
 
 
 def _has_vt_support() -> bool:
@@ -879,9 +879,9 @@ class DetailUI:
             inode_cell = Text()
             inode_cell.append_text(self._render_progress_bar(inode_frac, width=30, gradient=True))
             inode_cell.append(f" {vol.files_used:,}/{vol.files_capacity:,} ({inode_frac*100:.1f}%)")
-            t.add_row("Inode utilization", inode_cell)
+            t.add_row("Inode util", inode_cell)
         else:
-            t.add_row("Inode utilization", Text("—", style="dim"))
+            t.add_row("Inode util", Text("—", style="dim"))
 
         # Client IOPS (read / write / metadata).
         def _num(v: float, fmt: str = "{:.0f}") -> Text:
@@ -960,7 +960,7 @@ class DetailUI:
             rows.append((label, value, inverted))
 
         if has_cpu:
-            add("CPU utilization", fs.cpu_utilization)
+            add("CPU util", fs.cpu_utilization)
         if perf is not None:
             add("Network throughput util", perf.network_throughput_util)
             add("Disk throughput util", perf.disk_throughput_util)
@@ -1384,118 +1384,183 @@ class DetailUI:
             border_style="blue",
         )
     
-    def _render_oss_table(self, oss_list: List[ObjectStorageServer]) -> Optional[Table]:
-        """Render per-OSS utilization table (Lustre). Returns None if empty."""
-        if not oss_list:
+    def _render_lustre_obj_storage_panel(self,
+                                          oss_list: List[ObjectStorageServer],
+                                          ost_list: List[ObjectStorageTarget]
+                                          ) -> Optional[Table]:
+        """Lustre 'Object storage performance' section.
+
+        Three rows, averaged across all OSSs/OSTs:
+        - Network throughput utilization (OSS)
+        - Disk throughput utilization (OSS)
+        - Disk IOPS utilization (OST)
+        """
+        if not oss_list and not ost_list:
             return None
+
+        def _avg(values: List[float]) -> Optional[float]:
+            vals = [v for v in values if v is not None]
+            return sum(vals) / len(vals) if vals else None
+
+        net_avg = _avg([o.network_throughput_util for o in oss_list])
+        dtu_avg = _avg([o.disk_throughput_util for o in oss_list])
+        iops_avg = _avg([o.disk_iops_util for o in ost_list if o.disk_iops_util is not None])
+
         t = Table(
-            title="Object storage servers (OSS)",
-            title_style="bold dim",
-            title_justify="left",
-            show_header=True,
-            header_style="bold",
-            border_style="dim",
-            expand=True,
+            title="Object storage performance (avg across OSSs/OSTs)",
+            title_style="bold dim", title_justify="left",
+            show_header=False, border_style="dim", expand=True, padding=(0, 1),
         )
-        t.add_column("OSS ID", style="cyan", no_wrap=True, min_width=10)
-        t.add_column("Network throughput util", width=42)
-        t.add_column("Disk throughput util", width=42)
-        for o in oss_list:
-            def _bar(v: float) -> Text:
-                b = self._render_progress_bar(max(0.0, min(1.0, v / 100.0)), width=30, gradient=True)
-                cell = Text()
-                cell.append_text(b)
-                cell.append(f" {v:5.1f}%")
-                return cell
-            t.add_row(o.id, _bar(o.network_throughput_util), _bar(o.disk_throughput_util))
+        t.add_column("Metric", style="dim", no_wrap=True)
+        t.add_column("Value", width=40, no_wrap=True)
+
+        def _cell(v: Optional[float]) -> Text:
+            if v is None:
+                return Text("—", style="dim")
+            frac = max(0.0, min(1.0, v / 100.0))
+            bar = self._render_progress_bar(frac, width=30, gradient=True)
+            cell = Text()
+            cell.append_text(bar)
+            cell.append(f" {v:5.1f}%")
+            return cell
+
+        t.add_row("Network throughput util (OSS)", _cell(net_avg))
+        t.add_row("Disk throughput util (OSS)", _cell(dtu_avg))
+        t.add_row("Disk IOPS util (OST)", _cell(iops_avg))
         return t
 
-    def _render_ost_table(self, ost_list: List[ObjectStorageTarget]) -> Optional[Table]:
-        """Render per-OST utilization table (Lustre). Returns None if empty."""
-        if not ost_list:
+    def _render_lustre_metadata_panel(self, fs: FileSystem,
+                                       mds_list: List[MetadataServer]) -> Optional[Table]:
+        """Lustre 'Metadata performance' section.
+
+        Two rows averaged across all MDSs/MDTs:
+        - Metadata IOPS utilization (MDT) — client-derived, stored on
+          fs.metadata_iops_util_avg by the controller.
+        - CPU utilization (MDS)
+        """
+        if not mds_list and fs.metadata_iops_util_avg is None:
             return None
+
+        cpu_vals = [m.cpu_utilization for m in mds_list if m.cpu_utilization is not None]
+        cpu_avg = (sum(cpu_vals) / len(cpu_vals)) if cpu_vals else None
+
         t = Table(
-            title="Object storage targets (OST)",
-            title_style="bold dim",
-            title_justify="left",
-            show_header=True,
-            header_style="bold",
-            border_style="dim",
-            expand=True,
+            title="Metadata performance (avg across all MDSs/MDTs)",
+            title_style="bold dim", title_justify="left",
+            show_header=False, border_style="dim", expand=True, padding=(0, 1),
         )
-        t.add_column("OST ID", style="cyan", no_wrap=True, min_width=10)
-        t.add_column("Disk IOPS util (SSD)", width=42)
-        t.add_column("Storage capacity util", width=42)
-        for o in ost_list:
-            def _bar(v: float) -> Text:
-                b = self._render_progress_bar(max(0.0, min(1.0, v / 100.0)), width=30, gradient=True)
-                cell = Text()
-                cell.append_text(b)
-                cell.append(f" {v:5.1f}%")
-                return cell
-            iops_cell = Text("-") if o.disk_iops_util is None else _bar(o.disk_iops_util)
-            t.add_row(o.id, iops_cell, _bar(o.storage_capacity_util))
+        t.add_column("Metric", style="dim", no_wrap=True)
+        t.add_column("Value", width=40, no_wrap=True)
+
+        def _cell(v: Optional[float]) -> Text:
+            if v is None:
+                return Text("—", style="dim")
+            frac = max(0.0, min(1.0, v / 100.0))
+            bar = self._render_progress_bar(frac, width=30, gradient=True)
+            cell = Text()
+            cell.append_text(bar)
+            cell.append(f" {v:5.1f}%")
+            return cell
+
+        t.add_row("Metadata IOPS util (MDT)", _cell(fs.metadata_iops_util_avg))
+        t.add_row("CPU util (MDS)", _cell(cpu_avg))
+        return t
+
+    def _render_mds_mdt_table(self,
+                               mds_list: List[MetadataServer],
+                               mdt_list: List[MetadataTarget]) -> Optional[Table]:
+        """Combined MDS/MDT row table: one row per MDS/MDT pair.
+
+        Columns: MDS ID | CPU utilization (MDS) | MDT ID | Metadata IOPS utilization (MDT)
+        MDS and MDT are 1:1 by convention; when counts differ we pad with —.
+        """
+        if not mds_list and not mdt_list:
+            return None
+
+        t = Table(
+            show_header=True, header_style="bold",
+            border_style="dim", expand=True,
+        )
+        t.add_column("MDS ID", style="cyan", no_wrap=True, min_width=10)
+        t.add_column("CPU util (MDS)", min_width=40)
+        t.add_column("MDT ID", style="cyan", no_wrap=True, min_width=10)
+        t.add_column("Metadata IOPS util (MDT)", min_width=40)
+
+        def _cell(v: Optional[float]) -> Text:
+            if v is None:
+                return Text("—", style="dim")
+            frac = max(0.0, min(1.0, v / 100.0))
+            bar = self._render_progress_bar(frac, width=30, gradient=True)
+            cell = Text()
+            cell.append_text(bar)
+            cell.append(f" {v:5.1f}%")
+            return cell
+
+        # Zip MDSs and MDTs by ordered index; pad the shorter side.
+        n = max(len(mds_list), len(mdt_list))
+        for i in range(n):
+            mds = mds_list[i] if i < len(mds_list) else None
+            mdt = mdt_list[i] if i < len(mdt_list) else None
+            t.add_row(
+                mds.id if mds else "—",
+                _cell(mds.cpu_utilization) if mds else Text("—", style="dim"),
+                mdt.id if mdt else "—",
+                _cell(mdt.metadata_iops_util) if mdt else Text("—", style="dim"),
+            )
         return t
 
     def _render_lustre_detail(self, fs: FileSystem) -> Panel:
-        """Render Lustre file system with MDS CPU breakdown."""
+        """Render Lustre file system: header + client connections line +
+        Object storage performance + Metadata performance + MDS/MDT table.
+        The FS-level file-server/latency panels are intentionally omitted
+        for Lustre (their constituent metrics are presented here instead).
+        """
         mds_servers = self._store.get_mds_servers()
         oss_servers = self._store.get_oss_servers()
         ost_targets = self._store.get_ost_targets()
+        mdt_targets = self._store.get_mdt_targets()
 
-        # Header with file system info
+        # Header and file-system-level metadata lines.
         header = self._render_header(fs)
         metrics = self._render_fs_metrics(fs)
         pricing = self._render_pricing_breakdown(fs)
-        perf_parts = self._perf_parts(fs)
 
-        # OSS/OST tables (each may be None when empty)
-        oss_table = self._render_oss_table(oss_servers)
-        ost_table = self._render_ost_table(ost_targets)
-        per_server_parts: List = []
-        for t in (oss_table, ost_table):
-            if t is not None:
-                per_server_parts += [Text(""), t]
-
-        # MDS table
-        mds_table = Table(
-            show_header=True,
-            header_style="bold",
-            border_style="dim",
-            expand=True,
-        )
-        
-        mds_table.add_column("MDS ID", style="cyan", no_wrap=True, min_width=10)
-        mds_table.add_column("CPU (%)", width=40)  # 30 bar + text
-        
-        if mds_servers:
-            # Paginate MDS servers
-            page_mds = self._get_page_items(mds_servers)
-            
-            for mds in page_mds:
-                # CPU with gradient progress bar (width=30 for smoother gradient)
-                cpu_pct = mds.cpu_utilization / 100.0  # Convert to 0-1 range
-                cpu_bar = self._render_progress_bar(cpu_pct, width=30, gradient=True)
-                cpu_text = Text()
-                cpu_text.append_text(cpu_bar)
-                cpu_text.append(f" {mds.cpu_utilization:.1f}%")
-                
-                mds_table.add_row(mds.id, cpu_text)
-            
-            # Page info
-            page_info = self._render_page_info(len(mds_servers))
-            parts = [header, metrics, pricing, *perf_parts,
-                     Text(""), mds_table, *per_server_parts,
-                     Text(""), page_info]
-            content = Group(*parts)
+        # Client connections line (Lustre-only).
+        client_line = Text()
+        client_line.append("Client connections: ", style="dim")
+        if fs.client_connections is None:
+            client_line.append("—", style="dim")
         else:
-            parts = [header, metrics, pricing, *perf_parts,
-                     *per_server_parts,
-                     Text(""), Text("Discovering MDS servers...", style="dim italic")]
-            content = Group(*parts)
-        
+            client_line.append(f"{fs.client_connections}")
+
+        # Section tables (any may be None during initial load).
+        obj_panel = self._render_lustre_obj_storage_panel(oss_servers, ost_targets)
+        meta_panel = self._render_lustre_metadata_panel(fs, mds_servers)
+        pair_table = self._render_mds_mdt_table(mds_servers, mdt_targets)
+
+        parts: List = [header, metrics, pricing, client_line]
+
+        # Pack Object-storage + Metadata panels side-by-side 50:50 when both
+        # are present; otherwise emit whichever exists on its own row.
+        if obj_panel is not None and meta_panel is not None:
+            side_by_side = Table.grid(expand=True, padding=(0, 1))
+            side_by_side.add_column(ratio=1)
+            side_by_side.add_column(ratio=1)
+            side_by_side.add_row(obj_panel, meta_panel)
+            parts += [Text(""), side_by_side]
+        elif obj_panel is not None:
+            parts += [Text(""), obj_panel]
+        elif meta_panel is not None:
+            parts += [Text(""), meta_panel]
+
+        if pair_table is not None:
+            parts += [Text(""), pair_table]
+
+        if obj_panel is None and meta_panel is None and pair_table is None:
+            parts += [Text(""), Text("Discovering Lustre metrics...", style="dim italic")]
+
         return Panel(
-            content,
+            Group(*parts),
             title=f"FSx Lustre Detail - {fs.id}",
             border_style="blue",
         )

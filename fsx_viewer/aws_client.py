@@ -1135,21 +1135,26 @@ class CloudWatchClient:
                 'mds': {mds_id: cpu_util},
                 'oss': {oss_id: {'network_throughput_util': .., 'disk_throughput_util': ..}},
                 'ost': {ost_id: {'disk_iops_util': .., 'storage_capacity_util': ..}},
+                'mdt': {mdt_id: {'ops_per_minute': ..}},  # DiskRead+Write ops, Sum per minute
+                'client_connections': <int>,              # ClientConnections at the FS level
             }
         """
-        result: Dict[str, Dict[str, Any]] = {'mds': {}, 'oss': {}, 'ost': {}}
+        result: Dict[str, Dict[str, Any]] = {
+            'mds': {}, 'oss': {}, 'ost': {}, 'mdt': {},
+        }
+        client_connections: Optional[int] = None
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(minutes=10)
 
         # Custom label uses CloudWatch's `${PROP('Dim.FileServer')}` template
         # syntax so every returned timeseries carries an unambiguous
         # "<qid>|<dimension-value>" label.
-        def search(qid: str, dim_schema: str, metric_name: str) -> Dict[str, Any]:
+        def search(qid: str, dim_schema: str, metric_name: str, stat: str = 'Average') -> Dict[str, Any]:
             return {
                 'Id': qid,
                 'Expression': (
                     f"SEARCH('{{AWS/FSx,FileSystemId,{dim_schema}}} "
-                    f"MetricName=\"{metric_name}\" FileSystemId=\"{fs_id}\"', 'Average', 60)"
+                    f"MetricName=\"{metric_name}\" FileSystemId=\"{fs_id}\"', '{stat}', 60)"
                 ),
                 'Period': 60,
                 'Label': f"{qid}|${{PROP('Dim.{dim_schema}')}}",
@@ -1162,6 +1167,24 @@ class CloudWatchClient:
             search('oss_dtu', 'FileServer', 'FileServerDiskThroughputUtilization'),
             search('ost_iops', 'StorageTargetId', 'DiskIopsUtilization'),
             search('ost_cap', 'StorageTargetId', 'StorageCapacityUtilization'),
+            # MDT disk read/write ops are Sum statistics (Count/minute) that we
+            # use client-side to derive metadata IOPS utilization.
+            search('mdt_rops', 'StorageTargetId', 'DiskReadOperations', stat='Sum'),
+            search('mdt_wops', 'StorageTargetId', 'DiskWriteOperations', stat='Sum'),
+            # File-system-scope ClientConnections.
+            {
+                'Id': 'client_conn',
+                'MetricStat': {
+                    'Metric': {
+                        'Namespace': 'AWS/FSx',
+                        'MetricName': 'ClientConnections',
+                        'Dimensions': [{'Name': 'FileSystemId', 'Value': fs_id}],
+                    },
+                    'Period': 60,
+                    'Stat': 'Average',
+                },
+                'ReturnData': True,
+            },
         ]
 
         try:
@@ -1177,6 +1200,12 @@ class CloudWatchClient:
                     continue
                 value = float(values[0])
                 label = r.get('Label', '')
+                rid = r.get('Id', '')
+                # ClientConnections is a plain MetricStat query (not SEARCH),
+                # so it has no "qid|dim" label — dispatch by Id.
+                if rid == 'client_conn':
+                    client_connections = int(value)
+                    continue
                 if '|' not in label:
                     continue
                 qid, dim_value = label.split('|', 1)
@@ -1196,9 +1225,16 @@ class CloudWatchClient:
                         continue
                     entry = result['ost'].setdefault(dim_value, {})
                     entry['disk_iops_util' if qid == 'ost_iops' else 'storage_capacity_util'] = value
+                elif qid in ('mdt_rops', 'mdt_wops'):
+                    if not dim_value.startswith('MDT'):
+                        continue
+                    entry = result['mdt'].setdefault(dim_value, {'ops_per_minute': 0.0})
+                    # Accumulate read and write ops per MDT.
+                    entry['ops_per_minute'] = entry.get('ops_per_minute', 0.0) + value
         except Exception as e:
             logger.warning(f"Failed to get Lustre per-server metrics for {fs_id}: {e}")
 
+        result['client_connections'] = client_connections
         return result
     
     def _build_perf_queries(self, fs_id: str, fs_type: FileSystemType

@@ -118,6 +118,9 @@ class FileSystem:
     # File-server performance utilization (detail view)
     perf_metrics: Optional['PerfMetrics'] = None
     latency_metrics: Optional['LatencyMetrics'] = None
+    # Lustre-only: client connections + aggregate metadata IOPS util percent.
+    client_connections: Optional[int] = None
+    metadata_iops_util_avg: Optional[float] = None
     
     # Display state
     visible: bool = True
@@ -267,6 +270,17 @@ class ObjectStorageTarget:
     storage_capacity_util: float = 0.0           # percent 0-100
 
 
+@dataclass
+class MetadataTarget:
+    """Lustre MDT with metadata-IOPS utilization (client-derived)."""
+    id: str                    # e.g., "MDT0000"
+    file_system_id: str
+    # Sum of DiskReadOperations + DiskWriteOperations for the most-recent minute.
+    ops_per_minute: float = 0.0
+    # Client-derived percent: ops_per_minute / 60 / per-MDT provisioned IOPS share.
+    metadata_iops_util: Optional[float] = None
+
+
 class DetailStore:
     """Thread-safe store for detail view data."""
     
@@ -277,6 +291,7 @@ class DetailStore:
         self._mds_servers: Dict[str, MetadataServer] = {}
         self._oss_servers: Dict[str, ObjectStorageServer] = {}
         self._ost_targets: Dict[str, ObjectStorageTarget] = {}
+        self._mdt_targets: Dict[str, MetadataTarget] = {}
     
     def set_file_system(self, fs: FileSystem) -> None:
         """Set the file system for detail view."""
@@ -323,6 +338,14 @@ class DetailStore:
     def get_ost_targets(self) -> List[ObjectStorageTarget]:
         with self._lock:
             return sorted(self._ost_targets.values(), key=lambda o: o.id)
+
+    def add_mdt(self, mdt: MetadataTarget) -> None:
+        with self._lock:
+            self._mdt_targets[mdt.id] = mdt
+
+    def get_mdt_targets(self) -> List[MetadataTarget]:
+        with self._lock:
+            return sorted(self._mdt_targets.values(), key=lambda m: m.id)
 
 
 class Store:

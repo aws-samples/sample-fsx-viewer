@@ -6,7 +6,7 @@ import time
 from typing import Optional, Callable, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .model import Store, FileSystem, FileSystemType, DetailStore, Volume, MetadataServer, ObjectStorageServer, ObjectStorageTarget, LatencyMetrics
+from .model import Store, FileSystem, FileSystemType, DetailStore, Volume, MetadataServer, ObjectStorageServer, ObjectStorageTarget, MetadataTarget, LatencyMetrics
 from .aws_client import FSxClient, CloudWatchClient, StaticPricingProvider
 
 logger = logging.getLogger(__name__)
@@ -380,6 +380,11 @@ class DetailController:
                     fs.pricing_breakdown = existing.pricing_breakdown
                     fs.perf_metrics = existing.perf_metrics
                     fs.latency_metrics = existing.latency_metrics
+                    # Preserve Lustre-only aggregates too.
+                    if existing.client_connections is not None:
+                        fs.client_connections = existing.client_connections
+                    if existing.metadata_iops_util_avg is not None:
+                        fs.metadata_iops_util_avg = existing.metadata_iops_util_avg
                     if not fs.availability_zones and existing.availability_zones:
                         fs.availability_zones = existing.availability_zones
                 
@@ -547,6 +552,34 @@ class DetailController:
                     disk_iops_util=fields.get('disk_iops_util'),
                     storage_capacity_util=fields.get('storage_capacity_util', 0.0),
                 ))
+
+            # MDT metadata IOPS utilization (client-derived; CloudWatch
+            # doesn't publish a utilization metric for MDT).
+            mdt_entries = per_server.get('mdt', {})
+            mdt_count = len(mdt_entries) or 1
+            # Per-MDT provisioned IOPS share: total / num MDTs.
+            per_mdt_iops = (fs.provisioned_iops / mdt_count) if fs.provisioned_iops > 0 else 0.0
+            util_samples: List[float] = []
+            for mdt_id, fields in mdt_entries.items():
+                ops_per_minute = fields.get('ops_per_minute', 0.0)
+                util: Optional[float] = None
+                if per_mdt_iops > 0:
+                    util = min(100.0, (ops_per_minute / 60.0) / per_mdt_iops * 100.0)
+                    util_samples.append(util)
+                self._store.add_mdt(MetadataTarget(
+                    id=mdt_id, file_system_id=self._file_system_id,
+                    ops_per_minute=ops_per_minute,
+                    metadata_iops_util=util,
+                ))
+
+            # Aggregate metadata IOPS utilization (average across MDTs) +
+            # client connections, stored on the FileSystem for the header.
+            fs.metadata_iops_util_avg = (
+                sum(util_samples) / len(util_samples) if util_samples else None
+            )
+            cc = per_server.get('client_connections')
+            if cc is not None:
+                fs.client_connections = int(cc)
 
             self._notify_update()
         except Exception as e:
